@@ -58,3 +58,9 @@ A paced FIFO substituted for the finite file failed on the Pi with a broken pipe
 ### Recognition request policy
 
 `recognition.LookupGate` is a provider-independent scheduler. It requires explicit enablement, audible signal and at least ten seconds of buffered audio. A qualifying gap makes a lookup eligible after cooldown, and a slower periodic check covers continuous material. Only one request can be in flight. Misses apply exponential backoff, and a longer provider retry delay takes precedence. The caller owns request timeouts and must report each outcome. The module makes no network requests or scrobble submissions.
+
+### Managed virtual microphone
+
+A user-local PulseAudio rehearsal on a Raspberry Pi 3 used a private Unix socket in a mode-0700 scratch directory, a 48 kHz stereo null sink, and two monitor clients. Six seconds of paced generated PCM reached the primary reader across a secondary reader disconnect and reconnect. The installed Sendspin CLI recognized `pulse:record_relay.monitor` as 48 kHz, 16-bit, stereo in a separate process with a temporary identity and no Music Assistant connection.
+
+The next deployment rehearsal is generated audio through Sendspin into Music Assistant under a separate source identity. Persistently installing the audio service and switching the physical capture input are separate operations. Keep the current source available until the test source passes sustained playback and recovery checks, and run the physical-input cutover only at an agreed playback break.
