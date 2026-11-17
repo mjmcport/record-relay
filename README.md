@@ -78,3 +78,13 @@ With FFmpeg installed, `python3 export_track.py side-a.wav track-01.flac --start
 On a Raspberry Pi 3 with Sendspin CLI 0.4.0 and Music Assistant 2.10.12, two disposable, authenticated Sendspin identities were used to verify routing. The source used the client's built-in tone and the receiver wrote PCM without driving a speaker. Music Assistant sent about 1.7 MB to that receiver during a short test. Both identities were stopped, unpaired and removed. Existing players and their groups were left alone.
 
 This verifies the transport and routing independently of the virtual microphone. It does not yet verify the composed path from the tested PulseAudio monitor through Music Assistant, sustained network streaming, or a reconnect of the Sendspin transport. Those are the next acceptance checks before a physical-input cutover. Temporary tokens belong outside the repository and should be revoked after testing. On this Music Assistant release, token revocation may also clear pairings owned by the same account. Plan revocation at a playback break.
+
+### Verify an offload before publishing it
+
+`python3 offload.py track-01.flac /path/to/staging/track-01.flac` streams a finished export into staging, flushes it, and checks both copies against SHA-256 before making the destination visible. It preserves the source and refuses to replace an existing destination. The destination filesystem must support hard links. If it does not, use a local staging filesystem while the target-specific offload is evaluated. The command verifies bytes; the track exporter is responsible for producing valid FLAC.
+
+### Combined routing acceptance
+
+The private token used for the first routing test was discarded locally. Batch the remaining authenticated tests into one session with an operator-approved credential. Prefer an isolated Music Assistant instance with an independent account and disposable pairings, so temporary token revocation cannot affect household pairings. If using the live server, create ephemeral endpoints with fresh identity state, verify that the sink is independent, and reserve credential revocation for a playback break.
+
+Feed generated stereo PCM into the private PulseAudio monitor, then play that source only on the disposable silent sink. Run for at least a minute. Check continuity across multiple tone changes, observe a secondary reader disconnect while the primary runs, then reconnect a disposable Sendspin endpoint and verify delivery resumes. Stop, unpair and remove the test endpoints. Leave the production Turntable source and Sonos group alone throughout.
