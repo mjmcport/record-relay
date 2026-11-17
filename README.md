@@ -46,3 +46,11 @@ This rehearsal passed the Python tests on the Mac and a Raspberry Pi 3. Tests co
 - Record the existing source's launch settings and verify that the original service can be restarted. At an agreed playback break, stop that source and open ALSA exactly once with the new capture process. Keep remote lookups and recording off for the first test.
 - Start playback on the test identity, check both channels and sustained playback, then compare with local memory sampling active. Never test by opening ALSA a second time while the production source is playing.
 - If the audio drops or the device fails to reopen, stop the new process and restart the saved original service. Verify playback from the original Turntable source before leaving the test. The rehearsal does not install or change either service.
+
+### Linux virtual-input compatibility
+
+Run `sh scripts/rehearse-alsa.sh` on the Pi. This uses a process-local ALSA configuration and a finite generated file. No physical device, live source, or Music Assistant server is used. The input may be unlisted by the client's enumerator; explicit selection by name works in the installed [C++ Sendspin CLI](https://github.com/Sendspin/sendspin-cpp-cli). On a Pi 3 the client reported 48 kHz, 16-bit stereo for this virtual input in an isolated launch with no Music Assistant connection.
+
+A finite file only tests format and byte parity. A live adapter must also pass sustained pacing, input reopen, EOF and reconnection tests. Do not deploy this file-backed device as a live source.
+
+A paced FIFO substituted for the finite file failed on the Pi with a broken pipe during capture. Keep the production source intact. Next, evaluate a managed audio graph with a virtual microphone, or an upstream PCM source adapter, rather than treating the ALSA file plugin as a reliable live pipe.
