@@ -68,3 +68,7 @@ The next deployment rehearsal is generated audio through Sendspin into Music Ass
 `listening.ListeningInstance` provides a separate eligibility check for confirmed audible listening. Detection and listening are independent. The prototype uses half the known track length or four minutes, whichever is shorter, and excludes known tracks of 30 seconds or less. Unknown duration requires four verified minutes. Persisting receipts and sending to a listening service remain integration work.
 
 The SQLite receipt store reserves a play before submission. A pending receipt blocks automatic resubmission even after a crash or restart. Mark it accepted only after provider confirmation. A crash before the request also leaves a pending receipt for manual review. Place the database in a private runtime directory outside the repository. The provider integration and receipt-review interface remain open.
+
+### Export a reviewed split
+
+With FFmpeg installed, `python3 export_track.py side-a.wav track-01.flac --start 48000 --end 144000 --title "Example"` exports an exact stereo sample range from a WAV side master. Start is inclusive and end is exclusive. The original is preserved, and an existing output is never replaced. This is a local CLI step; artwork, waveform editing and transfer verification are later features.
