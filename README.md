@@ -72,3 +72,9 @@ The SQLite receipt store reserves a play before submission. A pending receipt bl
 ### Export a reviewed split
 
 With FFmpeg installed, `python3 export_track.py side-a.wav track-01.flac --start 48000 --end 144000 --title "Example"` exports an exact stereo sample range from a WAV side master. Start is inclusive and end is exclusive. The original is preserved, and an existing output is never replaced. This is a local CLI step; artwork, waveform editing and transfer verification are later features.
+
+### Music Assistant routing rehearsal
+
+On a Raspberry Pi 3 with Sendspin CLI 0.4.0 and Music Assistant 2.10.12, two disposable, authenticated Sendspin identities were used to verify routing. The source used the client's built-in tone and the receiver wrote PCM without driving a speaker. Music Assistant sent about 1.7 MB to that receiver during a short test. Both identities were stopped, unpaired and removed. Existing players and their groups were left alone.
+
+This verifies the transport and routing independently of the virtual microphone. It does not yet verify the composed path from the tested PulseAudio monitor through Music Assistant, sustained network streaming, or a reconnect of the Sendspin transport. Those are the next acceptance checks before a physical-input cutover. Temporary tokens belong outside the repository and should be revoked after testing. On this Music Assistant release, token revocation may also clear pairings owned by the same account. Plan revocation at a playback break.
