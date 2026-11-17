@@ -54,3 +54,7 @@ Run `sh scripts/rehearse-alsa.sh` on the Pi. This uses a process-local ALSA conf
 A finite file only tests format and byte parity. A live adapter must also pass sustained pacing, input reopen, EOF and reconnection tests. Do not deploy this file-backed device as a live source.
 
 A paced FIFO substituted for the finite file failed on the Pi with a broken pipe during capture. Keep the production source intact. Next, evaluate a managed audio graph with a virtual microphone, or an upstream PCM source adapter, rather than treating the ALSA file plugin as a reliable live pipe.
+
+### Recognition request policy
+
+`recognition.LookupGate` is a provider-independent scheduler. It requires explicit enablement, audible signal and at least ten seconds of buffered audio. A qualifying gap makes a lookup eligible after cooldown, and a slower periodic check covers continuous material. Only one request can be in flight. Misses apply exponential backoff, and a longer provider retry delay takes precedence. The caller owns request timeouts and must report each outcome. The module makes no network requests or scrobble submissions.
