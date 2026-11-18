@@ -1,6 +1,5 @@
 """Read-only playback evidence from an explicitly configured Music Assistant."""
 import json
-import math
 from urllib.parse import urlsplit
 from urllib.request import Request
 
@@ -57,61 +56,8 @@ class MusicAssistantObserver:
         return len(matches) == 1 and player_is_audible(matches[0], self.player_id, self.source_uri)
 
 
-class ScrobbleMonitor:
-    """Consume a current recognition result and confirm playback before delivery."""
+from listening import ListeningCoordinator
 
-    def __init__(self, observer, delivery, *, wall_clock):
-        self.observer = observer
-        self.delivery = delivery
-        self.wall_clock = wall_clock
-        self.play = None
-        self.track_epoch = None
-        self.local_listening = False
 
-    def progress(self, status):
-        play = self.play
-        track = status.get("track")
-        if (not status.get("scrobble") or not isinstance(track, dict)
-                or play is None or self.track_epoch != status.get("track_epoch")):
-            return None
-        artist, title = track.get("artist"), track.get("title")
-        if not all(isinstance(value, str) for value in (artist, title)):
-            return None
-        if json.dumps([artist.casefold().strip(), title.casefold().strip()]) != play.track_id:
-            return None
-        return {"seconds": int(play.seconds), "required_seconds": play.required_seconds,
-                "submitted": play.submitted}
-
-    def tick(self, status, still_enabled):
-        from listening import ListeningInstance
-
-        track = status.get("track")
-        if not status.get("scrobble") or not status.get("signal") or not isinstance(track, dict):
-            self.delivery.timing.previous = None
-            return False
-        artist, title = track.get("artist"), track.get("title")
-        if not all(isinstance(value, str) and value.strip() for value in (artist, title)):
-            self.delivery.timing.previous = None
-            return False
-        identity = json.dumps([artist.casefold().strip(), title.casefold().strip()])
-        epoch = status.get("track_epoch")
-        duration = track.get("duration_seconds")
-        if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
-            duration = None
-        if self.play is None or self.play.track_id != identity or self.track_epoch != epoch:
-            self.play = ListeningInstance(identity, int(self.wall_clock()), duration)
-            self.track_epoch = epoch
-        elif self.play.duration is None:
-            self.play.duration = duration
-        local = status.get("local_listening") is True
-        if local != self.local_listening:
-            self.delivery.timing.previous = None
-            self.local_listening = local
-        try:
-            audible = local or self.observer.audible()
-        except Exception:
-            self.delivery.timing.previous = None
-            raise
-        enabled = still_enabled(track, local)
-        return self.delivery.observe(self.play, audible=audible and enabled, enabled=enabled,
-                                     artist=artist, title=title, album=track.get("album"))
+class ScrobbleMonitor(ListeningCoordinator):
+    """Compatibility name for the provider-neutral coordinator with an MA observer."""

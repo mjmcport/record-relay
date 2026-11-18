@@ -6,13 +6,14 @@ from pathlib import Path
 import socket
 from socketserver import StreamRequestHandler, UnixStreamServer
 import sys
-from time import time
+from time import monotonic, time
 from threading import Thread
 
 from session import Session
 from providers import authenticated_open, recognize_audd, shazam_recognizer, tls_transport
 from worker import RecognitionWorker, ScrobbleDelivery
-from music_assistant import MusicAssistantObserver, ScrobbleMonitor
+from listening import ListeningCoordinator, PlaybackTiming
+from music_assistant import MusicAssistantObserver
 from receipts import ReceiptStore
 
 
@@ -25,9 +26,15 @@ def private_text(path):
     return path.read_text()
 
 
-def still_listening(session, track, local):
+def still_listening(session, track, local, expected_epoch=None):
     status = session.status()
-    return (status["scrobble"] and status["signal"] and status["track"] is track
+    current = status.get("track")
+    if not isinstance(current, dict) or not isinstance(track, dict):
+        return False
+    identity = lambda value: (value.get("artist", "").casefold().strip(),
+                              value.get("title", "").casefold().strip())
+    return (status["scrobble"] and status["signal"] and identity(current) == identity(track)
+            and (expected_epoch is None or status["track_epoch"] == expected_epoch)
             and status["local_listening"] == local)
 
 
@@ -51,17 +58,26 @@ def serve(args):
     if args.scrobble_config:
         config = json.loads(private_text(args.scrobble_config))
         transport = authenticated_open
-        if tls := config.get("client_tls"):
-            if not config["music_assistant_url"].startswith("https://"):
-                raise ValueError("Client TLS requires an HTTPS Music Assistant URL")
-            transport = tls_transport(tls["authority"], tls["certificate"], tls["key"])
-        observer = MusicAssistantObserver(config["music_assistant_url"], config["music_assistant_token"],
-                                          config["player_id"], config["source_uri"], transport=transport)
+        observer = None
+        ma_keys = ("music_assistant_url", "music_assistant_token", "player_id", "source_uri")
+        if any(config.get(key) for key in ma_keys):
+            if not all(config.get(key) for key in ma_keys):
+                raise ValueError("Music Assistant observer needs URL, token, player ID, and source URI")
+            if tls := config.get("client_tls"):
+                if not config["music_assistant_url"].startswith("https://"):
+                    raise ValueError("Client TLS requires an HTTPS Music Assistant URL")
+                transport = tls_transport(tls["authority"], tls["certificate"], tls["key"])
+            observer = MusicAssistantObserver(config["music_assistant_url"], config["music_assistant_token"],
+                                              config["player_id"], config["source_uri"], transport=transport)
+        listenbrainz_token = config.get("listenbrainz_token")
+        if not isinstance(listenbrainz_token, str) or not listenbrainz_token.strip():
+            raise ValueError("A ListenBrainz token is required for scrobbling")
         receipt_path = args.scrobble_config.parent / "listens.sqlite"
         if receipt_path.is_symlink():
             raise ValueError("Receipt database must not be a symbolic link")
-        monitor = ScrobbleMonitor(observer, ScrobbleDelivery(ReceiptStore(receipt_path),
-                                  config["listenbrainz_token"]), wall_clock=time)
+        monitor = ListeningCoordinator(observer, ScrobbleDelivery(ReceiptStore(receipt_path),
+                                         listenbrainz_token, timing=PlaybackTiming(clock=monotonic)),
+                                       wall_clock=time)
 
     class Handler(StreamRequestHandler):
         def handle(self):
@@ -79,7 +95,7 @@ def serve(args):
                     if type(data["enabled"]) is not bool:
                         raise ValueError("Scrobble expects a boolean")
                     if data["enabled"] and monitor is None:
-                        raise ValueError("Configure Music Assistant and ListenBrainz first")
+                        raise ValueError("Configure ListenBrainz first")
                     session.set_scrobble(data["enabled"])
                 elif action == "local_listening":
                     if type(data["enabled"]) is not bool:
@@ -112,7 +128,9 @@ def serve(args):
             )
         if monitor is not None:
             scrobble_worker = RecognitionWorker(
-                lambda: monitor.tick(session.status(), lambda track, local: still_listening(session, track, local)),
+                lambda: monitor.tick(
+                    session.status(),
+                    lambda track, local: still_listening(session, track, local, monitor.track_epoch)),
                 lambda: True, interval=1,
             )
         worker = Thread(target=server.serve_forever, daemon=True)

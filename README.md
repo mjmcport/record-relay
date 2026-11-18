@@ -146,9 +146,9 @@ With the private PCM session running, use `python3 panel.py /path/to/private/con
 
 Recording controls work without a provider. For authorized AudD testing, supply `--audd-token-file` to the session using an owner-only file outside the repository. Identification starts disabled. Enable it in the panel to run lookups in a worker outside the PCM path. Turning it off stops future lookups, although a request already sent cannot be withdrawn. The panel reports the last recognized artist and title.
 
-`worker.ScrobbleDelivery` combines verified playback observations, the eligibility policy, and the ListenBrainz sender. Its caller must establish track identity and actual audible playback. The panel starts with Scrobble off. For a separately authorized pilot, pass `--scrobble-config` a private JSON file containing `music_assistant_url`, `music_assistant_token`, `player_id`, `source_uri`, and `listenbrainz_token`. Use a mode-0600 file in a mode-0700 directory outside the repository. Use HTTPS or a loopback SSH tunnel for the Music Assistant API. The adjacent private receipt database tracks delivery outcomes.
+`worker.ScrobbleDelivery` combines verified playback observations, the eligibility policy, and the ListenBrainz sender. Its caller must establish track identity and listening evidence. The panel starts with Scrobble off. Pass `--scrobble-config` a private JSON file containing `listenbrainz_token`; optional Music Assistant playback evidence uses `music_assistant_url`, `music_assistant_token`, `player_id`, and `source_uri`. Use a mode-0600 file in a mode-0700 directory outside the repository. Use HTTPS or a loopback SSH tunnel for the Music Assistant API. The adjacent private receipt database tracks delivery outcomes.
 
-The observer requires one exact physical playback target, the exact active source URI, explicit unmuted nonzero volume, and a fresh recognition match. Silence, missing metadata, opt-out and unavailable playback evidence do not count toward eligibility. Unknown track length uses a four-minute threshold, and brief unidentified or silent intervals preserve the current receipt. Tests use simulated playback and a fake sender. Validate reported state against actual speakers before enabling real submissions. Group-level playback attribution, detecting repeated plays of the same track as separate listens, and standalone silent-listener controls remain open.
+When configured, the observer requires one exact physical playback target, the exact active source URI, explicit unmuted nonzero volume, and a fresh recognition match. Without Music Assistant, the explicit expiring local-listening control can provide evidence while the input has signal. Silence, missing metadata, opt-out and unavailable playback evidence do not count toward eligibility. Unknown track length uses a four-minute threshold, and brief unidentified or silent intervals preserve the current receipt. Tests use simulated playback and a fake sender. Validate reported state against actual speakers before enabling real submissions. Group-level playback attribution and detecting repeated plays of the same track as separate listens remain open.
 
 For the browser smoke test, install Playwright for Python and Chromium, then run `python3 tests/browser/test_panel.py`. Set `CHROME_PATH` to use an existing Chrome binary. The test starts disposable local processes, passes generated PCM and verifies the output WAV and rejected control requests.
 
@@ -224,10 +224,11 @@ recreate Music Assistant with its original image and configuration.
 ### Prepare a ListenBrainz credential
 
 Get the user token from the [ListenBrainz profile](https://listenbrainz.org/profile/).
-Run `python3 integrations/setup_scrobble.py OUTPUT_JSON MA_TOKEN_FILE MA_URL PLAYER_ID SOURCE_URI`
-in a private Terminal. The tool reads the existing private Music Assistant token
-file and prompts for the ListenBrainz token with input hidden. It creates the
-configuration with mode 0600. Keep it out of chat, shell history, and Git.
+Run `python3 integrations/setup_scrobble.py OUTPUT_JSON [MA_TOKEN_FILE MA_URL PLAYER_ID SOURCE_URI]`
+in a private Terminal. The tool prompts for the ListenBrainz token with input
+hidden. Add the four optional Music Assistant arguments only when using an MA
+playback observer. It creates the configuration with mode 0600. Keep it out of
+chat, shell history, and Git.
 Give the service account ownership of the private file and directory, and pass
 it to `--scrobble-config`. The panel starts with Scrobble off. For a live test,
 select the intended playback target and use a genuinely eligible listening

@@ -1,6 +1,6 @@
 """Recognition and submission work scheduled outside the PCM thread."""
 from threading import Event, Thread
-from time import monotonic
+from listening import PlaybackTiming
 
 
 class RecognitionWorker:
@@ -26,26 +26,6 @@ class RecognitionWorker:
         self.thread.join(12)
 
 
-class PlaybackTiming:
-    """Count short intervals only while the intended sink reports audible playback."""
-
-    def __init__(self, *, clock=monotonic, maximum_interval=2):
-        self.clock = clock
-        self.maximum_interval = maximum_interval
-        self.previous = None
-
-    def observe(self, play, *, audible):
-        now = self.clock()
-        previous = self.previous
-        self.previous = (now, play.receipt_key, audible)
-        if previous is not None:
-            stamp, track, was_audible = previous
-            elapsed = now - stamp
-            if 0 <= elapsed <= self.maximum_interval:
-                play.add_interval(elapsed, audible=audible and was_audible,
-                                  same_track=track == play.receipt_key)
-
-
 class ScrobbleDelivery:
     """Bridge observed playback to ListenBrainz via a persistent receipt store."""
 
@@ -57,11 +37,12 @@ class ScrobbleDelivery:
         self.timing = timing if timing is not None else PlaybackTiming()
         self.sender = sender if sender is not None else send_listen
 
-    def observe(self, play, *, audible, enabled, artist, title, album=None):
+    def observe(self, play, *, audible, enabled, artist, title, album=None, still_enabled=None):
         from submission import submit_once
 
         self.timing.observe(play, audible=audible)
         return submit_once(play, enabled=enabled and audible, receipts=self.receipts,
+                           still_enabled=still_enabled,
                            service="listenbrainz", send=lambda candidate: self.sender(
                                candidate, artist=artist, title=title, album=album,
                                token=self.token, enabled=True))
