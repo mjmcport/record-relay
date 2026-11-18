@@ -1,17 +1,66 @@
 from http.server import ThreadingHTTPServer
+import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
+import wave
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from panel import panel_handler
 
 
 class RecordingDownloads(unittest.TestCase):
+    def test_fingerprint_endpoint_requires_noncommercial_acknowledgment(self):
+        with TemporaryDirectory() as directory:
+            library = Path(directory)
+            with wave.open(str(library / "side.wav"), "wb") as writer:
+                writer.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
+                writer.writeframes(bytes(4 * 10 * 48000))
+            with ThreadingHTTPServer(("127.0.0.1", 0), panel_handler) as server:
+                server.RequestHandlerClass = panel_handler(
+                    library / "control.sock", server.server_port, library,
+                    acoustid_client_key="abcdefgh12345678",
+                )
+                thread = Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    url = f"http://127.0.0.1:{server.server_port}"
+                    with urlopen(url + "/review/?side=side.wav", timeout=4) as response:
+                        page = response.read().decode()
+                        cookie = response.headers["Set-Cookie"].split(";")[0]
+                    token = re.search(r'data-review-token="([^"]+)"', page)[1]
+
+                    def lookup(ack):
+                        body = json.dumps({"name": "side.wav", "start": 0, "end": 480_000,
+                                           "noncommercial_ack": ack}).encode()
+                        return urlopen(Request(url + "/recordings/fingerprint", body, {
+                            "Origin": url, "Cookie": cookie, "X-Control-Token": token,
+                            "Content-Type": "application/json",
+                        }), timeout=4)
+
+                    with patch("fingerprinting.identify_saved_segment",
+                               return_value={"duration_seconds": 10, "matches": []}) as identify:
+                        with self.assertRaises(HTTPError) as error:
+                            lookup(False)
+                        self.assertEqual(error.exception.code, 400)
+                        error.exception.close()
+                        self.assertFalse(identify.called)
+                        with lookup(True) as response:
+                            self.assertEqual(json.loads(response.read())["matches"], [])
+                        with self.assertRaises(HTTPError) as error:
+                            lookup(True)
+                        self.assertEqual(error.exception.code, 429)
+                        error.exception.close()
+                        identify.assert_called_once()
+                finally:
+                    server.shutdown()
+                    thread.join()
+
     def test_download_requires_origin_and_token_and_cannot_read_symlink(self):
         with TemporaryDirectory() as directory:
             library = Path(directory)

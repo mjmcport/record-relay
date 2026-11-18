@@ -29,13 +29,19 @@ class AlbumService:
         self.send = send
         self._recording_lock = Lock()
 
-    def bootstrap(self):
+    def bootstrap(self, project_id=None):
         try:
             capture = self._control({"action": "status"})
         except Exception as error:
             capture = {"recording": "unavailable", "error": str(error)}
-        return {"schema_version": 1, "projects": self.catalog.projects(),
-                "history": self.catalog.history(limit=100), "capture": capture}
+        result = {"schema_version": 1, "projects": self.catalog.projects(),
+                  "history": self.catalog.history(limit=100), "capture": capture}
+        if isinstance(project_id, str) and self.catalog.get_project(project_id):
+            result["side_a_boundary"] = self.catalog.get_side_boundary(
+                project_id, capture.get("capture_generation"))
+        else:
+            result["side_a_boundary"] = None
+        return result
 
     def create_project(self, data):
         label = data.get("label", "")
@@ -108,6 +114,37 @@ class AlbumService:
             boot = status.get("boot_generation")
             if not isinstance(generation, str) or not isinstance(boot, str):
                 raise RuntimeError("Capture session does not expose a stable generation")
+            overlap_ack = data.get("overlap_ack", False)
+            if type(overlap_ack) is not bool:
+                raise ValueError("Overlap confirmation must be true or false")
+            unknown_boundary_ack = data.get("unknown_boundary_ack", False)
+            if type(unknown_boundary_ack) is not bool:
+                raise ValueError("Unknown-boundary confirmation must be true or false")
+            capture_command = {"action": "save_buffer" if data.get("buffered", False) else "record",
+                               "limit": limit}
+            if side == "B" and data.get("buffered", False):
+                boundary = self.catalog.get_side_boundary(project_id, generation)
+                if (boundary is None and status.get("side_a_end_capture_generation") == generation
+                        and type(status.get("side_a_end_frame")) is int):
+                    boundary = {"end_frame": status["side_a_end_frame"]}
+                if boundary is None and not unknown_boundary_ack:
+                    raise ValueError("No saved Side A boundary is known. Confirm the possible overlap before saving this buffer.")
+                oldest, newest = status.get("buffered_oldest_frame"), status.get("buffered_newest_frame")
+                if (type(oldest) is not int or type(newest) is not int
+                        or oldest < 0 or newest < oldest):
+                    raise RuntimeError("Capture session has no valid retained range")
+                start_frame = data.get("buffered_start_frame")
+                if start_frame is None and boundary is not None:
+                    start_frame = boundary["end_frame"]
+                if start_frame is not None:
+                    if type(start_frame) is not int or not oldest <= start_frame < newest:
+                        raise ValueError("The selected Side B start expired; choose a fresh buffer interval.")
+                    if boundary and start_frame < boundary["end_frame"] and not overlap_ack:
+                        raise ValueError("Confirm that Side B should include audio before the saved Side A end.")
+                    capture_command.update({"buffered_start_frame": start_frame,
+                                            "expected_capture_generation": generation,
+                                            "side_a_boundary_frame": boundary["end_frame"] if boundary else None,
+                                            "overlap_ack": overlap_ack})
             staging_id = str(uuid.uuid4())
             stage_name = f".rr-{staging_id}.staging.wav"
             published_name = f"rr-{staging_id}-side-{side}.wav"
@@ -118,10 +155,9 @@ class AlbumService:
                 intended_locator=published_name,
                 expected_revision=data["revision"],
             )
-            action = "save_buffer" if data.get("buffered", False) else "record"
+            capture_command.update({"name": stage_name, "request_id": request_id, "side": side})
             try:
-                result = self._control({"action": action, "name": stage_name, "limit": limit,
-                                        "request_id": request_id, "side": side})
+                result = self._control(capture_command)
                 if "error" in result:
                     raise RuntimeError(result["error"])
             except Exception as exc:
@@ -151,6 +187,7 @@ class AlbumService:
                 return json.loads(intent["result"])
             if intent["state"] not in ("writing", "closed", "verified"):
                 raise ValueError("This side is no longer recording")
+            result = {}
             if intent["state"] == "writing":
                 try:
                     result = self._control({"action": "stop", "request_id": request_id})
@@ -170,20 +207,41 @@ class AlbumService:
                 if type(frames) is not int or frames <= 0:
                     current = self.catalog.get_intent(request_id)
                     if current and current["state"] in ("closed", "verified"):
-                        return self.catalog.publish_take(request_id, expected_frames=current["expected_frames"])
+                        return self._publish_closed(current, {})
                     observed = self._observe_status(request_id)
                     if observed is None:
                         raise RuntimeError("Stop result is uncertain; the take remains recoverable")
                     if observed.get("recording_id") == request_id:
                         raise RuntimeError("Recorder is still finalizing; retry Stop to collect its receipt")
                     return self._recover_or_interrupt(intent, "Recorder returned no complete frames")
-                self.catalog.close_take(request_id, expected_frames=frames)
+                boundary = result.get("side_a_end_frame") if intent["side"] == "A" else None
+                boundary_generation = result.get("side_a_end_capture_generation")
+                if boundary_generation != intent["capture_generation"]:
+                    boundary = None
+                self.catalog.close_take(request_id, expected_frames=frames,
+                                        side_a_end_frame=boundary)
                 intent = self.catalog.get_intent(request_id)
             try:
-                return self.catalog.publish_take(request_id, expected_frames=intent["expected_frames"])
+                return self._publish_closed(intent, result if intent["state"] == "closed" else {})
             except (InvalidMaster, Conflict) as exc:
                 self.catalog.quarantine_take(request_id, str(exc))
                 raise
+
+    def _publish_closed(self, intent, result):
+        if intent["side"] == "A" and intent.get("side_a_end_frame") is None:
+            end_frame = result.get("side_a_end_frame")
+            generation = result.get("side_a_end_capture_generation")
+            if (type(end_frame) is not int or generation != intent["capture_generation"]):
+                observed = self._observe_status(intent["request_id"])
+                if observed and observed.get("side_a_end_capture_generation") == intent["capture_generation"]:
+                    end_frame = observed.get("side_a_end_frame")
+                    generation = observed.get("side_a_end_capture_generation")
+            if type(end_frame) is int and generation == intent["capture_generation"]:
+                intent = self.catalog.close_take(intent["request_id"],
+                                                 expected_frames=intent["expected_frames"],
+                                                 side_a_end_frame=end_frame)
+        return self.catalog.publish_take(intent["request_id"],
+                                         expected_frames=intent["expected_frames"])
 
     def _observe_status(self, request_id):
         try:
@@ -201,9 +259,18 @@ class AlbumService:
         if stage.exists():
             try:
                 info = validate_wav(stage, intent.get("expected_frames"))
+                boundary = None
+                if intent["side"] == "A":
+                    observed = self._observe_status(request_id)
+                    if observed and observed.get("side_a_end_capture_generation") == intent["capture_generation"]:
+                        boundary = observed.get("side_a_end_frame")
                 if intent["state"] == "writing":
-                    self.catalog.close_take(request_id, expected_frames=info["frames"])
-                return self.catalog.publish_take(request_id, expected_frames=info["frames"])
+                    intent = self.catalog.close_take(request_id, expected_frames=info["frames"],
+                                                     side_a_end_frame=boundary)
+                elif boundary is not None:
+                    intent = self.catalog.close_take(request_id, expected_frames=info["frames"],
+                                                     side_a_end_frame=boundary)
+                return self._publish_closed(intent, {})
             except (InvalidMaster, Conflict) as error:
                 self.catalog.quarantine_take(request_id, str(error))
                 raise

@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -46,6 +47,40 @@ class CatalogRecoveryTests(unittest.TestCase):
         self.assertTrue((self.library / "side-a.wav").exists())
         with self.assertRaises(Conflict):
             self.begin("cmd-2", "side-a.wav")
+
+    def test_schema_v1_upgrade_preserves_an_in_flight_intent(self):
+        path = self.root / "state" / "legacy.sqlite"
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        with sqlite3.connect(path) as db:
+            db.executescript("""
+                CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info VALUES(1);
+                CREATE TABLE projects(id TEXT PRIMARY KEY,label TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL DEFAULT 1,
+                    state TEXT NOT NULL DEFAULT 'open',metadata TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL);
+                CREATE TABLE takes(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,side TEXT,state TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,staging_id TEXT UNIQUE,locator TEXT UNIQUE,master_sha256 TEXT,
+                    frames INTEGER,sample_rate INTEGER,channels INTEGER,sample_width INTEGER,created_at TEXT NOT NULL,published_at TEXT);
+                CREATE TABLE intents(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,project_id TEXT NOT NULL,
+                    take_id TEXT NOT NULL UNIQUE,capture_generation TEXT NOT NULL,boot_generation TEXT NOT NULL,
+                    side TEXT NOT NULL,staging_id TEXT NOT NULL UNIQUE,staging_locator TEXT NOT NULL UNIQUE,
+                    intended_locator TEXT NOT NULL UNIQUE,expected_revision INTEGER NOT NULL,state TEXT NOT NULL,
+                    expected_frames INTEGER,result TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+            """)
+            db.execute("INSERT INTO projects(id,label,created_at) VALUES('project-1','Legacy','now')")
+            db.execute("INSERT INTO takes(id,project_id,side,state,staging_id,created_at) "
+                       "VALUES('take-1','project-1','A','recording','staging-1','now')")
+            db.execute("INSERT INTO intents(request_id,request_digest,project_id,take_id,capture_generation,"
+                       "boot_generation,side,staging_id,staging_locator,intended_locator,expected_revision,state,"
+                       "created_at,updated_at) VALUES('request-1','digest','project-1','take-1','capture-1','boot-1',"
+                       "'A','staging-1','.pending.wav','side.wav',1,'writing','now','now')")
+        upgraded = Catalog(path, self.library)
+        intent = upgraded.get_intent("request-1")
+        self.assertEqual(intent["state"], "writing")
+        self.assertEqual(intent["take_id"], "take-1")
+        self.assertIsNone(intent["side_a_end_frame"])
+        with upgraded.connect() as db:
+            self.assertEqual(db.execute("SELECT version FROM schema_info").fetchone()[0], 3)
+            self.assertEqual(db.execute("SELECT count(*) FROM side_boundaries").fetchone()[0], 0)
 
     def test_request_replay_and_digest_conflict(self):
         first = self.begin()

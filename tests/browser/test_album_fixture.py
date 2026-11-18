@@ -16,6 +16,7 @@ from playwright.sync_api import sync_playwright
 
 from album_service import AlbumService
 from catalog import Catalog
+import panel
 from panel import panel_handler
 
 
@@ -26,27 +27,55 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
     library.mkdir()
     catalog = Catalog(root / "state" / "catalog.sqlite", library)
     active_id = None
+    active_side = None
+    live_view_clients = set()
 
     def fake_control(_path, packet):
-        global active_id
+        global active_id, active_side
         command = json.loads(packet)
         if command["action"] == "status":
+            client_id = command.get("visual_client_id")
             return json.dumps({"capture_generation": "synthetic-capture", "boot_generation": "synthetic-boot",
                                "recording": "recording" if active_id else "idle",
-                               "recording_id": active_id, "signal": True, "buffered_seconds": 1,
+                               "recording_id": active_id, "recording_side": active_side,
+                               "signal": True, "buffered_seconds": 1,
+                               "buffered_oldest_frame": 0, "buffered_newest_frame": 96000,
+                               "side_a_end_frame": 48000,
+                               "side_a_end_capture_generation": "synthetic-capture",
+                               "live_view": bool(live_view_clients),
+                               "live_view_client": client_id in live_view_clients,
+                               "live_view_clients": len(live_view_clients), "visual_sequence": 1,
+                               "visual_age_seconds": 0.1,
+                               "visual_samples": [0.25] * 64 if live_view_clients else None,
+                               "visual_dropped_frames": 0,
+                               "offline_queue": False, "listen_queue": [],
                                "identify": False, "scrobble": False}).encode()
+        if command["action"] == "visual_client":
+            if command["enabled"]:
+                live_view_clients.add(command["visual_client_id"])
+            else:
+                live_view_clients.discard(command["visual_client_id"])
+            return fake_control(_path, json.dumps({"action": "status",
+                                                   "visual_client_id": command["visual_client_id"]}).encode())
         if command["action"] in ("record", "save_buffer"):
             active_id = command["request_id"]
+            active_side = command["side"]
             with wave.open(str(library / command["name"]), "wb") as writer:
                 writer.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
                 writer.writeframes(b"\x24\x00\x24\x00" * 4800)
             return b"{}"
         if command["action"] == "stop":
+            boundary = 48000 if active_side == "A" else None
             active_id = None
-            return b'{"recorded_frames":4800}'
+            active_side = None
+            return json.dumps({"recorded_frames":4800, "side_a_end_frame": boundary,
+                               "side_a_end_capture_generation": "synthetic-capture"}).encode()
         raise AssertionError(command)
 
     service = AlbumService(catalog, root / "capture.sock", send=fake_control)
+    # Panel control actions travel through this module-level socket adapter;
+    # point it at the same synthetic session used by AlbumService.
+    panel.forward = fake_control
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -57,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(executable_path=os.environ.get("CHROME_PATH"))
-            context = browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
+            context = browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="no-preference")
             page = context.new_page()
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
@@ -75,9 +104,21 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
             page.get_by_text("Side A · Saved · 0.1 sec", exact=False).wait_for()
             page.get_by_role("button", name="Side B").click()
             assert page.locator("#side-heading").inner_text() == "Side B"
+            page.locator("#side-b-start").wait_for(state="visible")
+            page.locator("#live-view").check()
+            page.wait_for_timeout(100)
+            page.locator("#live-canvas").wait_for(state="visible")
+            assert "Latest waveform frame" in page.locator("#live-view-status").inner_text()
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+            page.set_viewport_size({"width": 320, "height": 720})
+            assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+            page.screenshot(path="/tmp/record-relay-mobile.png", full_page=True)
             page.set_viewport_size({"width": 1280, "height": 800})
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+            page.screenshot(path="/tmp/record-relay-desktop.png", full_page=True)
+            page.emulate_media(reduced_motion="reduce")
+            page.wait_for_function("document.querySelector('#live-view').disabled && !document.querySelector('#live-view').checked && document.querySelector('#live-canvas').hidden")
+            assert not page.locator("#live-canvas").is_visible()
             assert not errors, errors
             context.close()
             browser.close()
@@ -85,4 +126,4 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=2)
-print("PASS: persistent album workbench, mocked save, reload history, and 390/1280 px reflow")
+print("PASS: persistent album workbench, mocked save, reload history, live waveform, and 320/390/1280 px reflow")

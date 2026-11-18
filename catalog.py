@@ -16,7 +16,7 @@ import wave
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -164,8 +164,6 @@ class Catalog:
             row = db.execute("SELECT version FROM schema_info LIMIT 1").fetchone()
             if row and row[0] > SCHEMA_VERSION:
                 raise CatalogError(f"Catalog schema {row[0]} is newer than supported {SCHEMA_VERSION}")
-            if row and row[0] < SCHEMA_VERSION:
-                raise CatalogError(f"No migration path from catalog schema {row[0]}")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
@@ -183,7 +181,8 @@ class Catalog:
                     boot_generation TEXT NOT NULL, side TEXT NOT NULL, staging_id TEXT NOT NULL UNIQUE,
                     staging_locator TEXT NOT NULL UNIQUE, intended_locator TEXT NOT NULL UNIQUE,
                     expected_revision INTEGER NOT NULL, state TEXT NOT NULL, expected_frames INTEGER,
-                    result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    side_a_end_frame INTEGER CHECK(side_a_end_frame IS NULL OR side_a_end_frame >= 0)
                 );
                 CREATE TABLE IF NOT EXISTS segments (
                     id TEXT PRIMARY KEY, take_id TEXT NOT NULL REFERENCES takes(id), start_frame INTEGER NOT NULL,
@@ -207,13 +206,27 @@ class Catalog:
                     request_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL, state TEXT NOT NULL,
                     result TEXT, error TEXT, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS side_boundaries (
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    capture_generation TEXT NOT NULL,
+                    end_frame INTEGER NOT NULL CHECK(end_frame >= 0),
+                    take_id TEXT NOT NULL REFERENCES takes(id),
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, capture_generation)
+                );
                 CREATE INDEX IF NOT EXISTS takes_project_idx ON takes(project_id, created_at);
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_take_per_project_side
                     ON takes(project_id, side) WHERE state IN ('preparing','recording','finalizing');
                 CREATE INDEX IF NOT EXISTS observations_project_idx ON observations(project_id, observed_at);
             """)
+            intent_columns = {column[1] for column in db.execute("PRAGMA table_info(intents)")}
+            if "side_a_end_frame" not in intent_columns:
+                db.execute("ALTER TABLE intents ADD COLUMN side_a_end_frame INTEGER "
+                           "CHECK(side_a_end_frame IS NULL OR side_a_end_frame >= 0)")
             if not row:
                 db.execute("INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION,))
+            elif row[0] < SCHEMA_VERSION:
+                db.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))
         try:
             os.chmod(self.path, 0o600)
         except FileNotFoundError:
@@ -341,23 +354,62 @@ class Catalog:
             row = db.execute("SELECT * FROM intents WHERE request_id=?", (request_id,)).fetchone()
         return dict(row) if row else None
 
-    def close_take(self, request_id: str, *, expected_frames: int) -> dict:
+    def record_side_boundary(self, project_id: str, capture_generation: str,
+                             end_frame: int, take_id: str):
+        if (not isinstance(capture_generation, str) or not capture_generation
+                or type(end_frame) is not int or end_frame < 0):
+            raise ValueError("Invalid saved-side boundary")
+        now = self._now()
+        with self.transaction() as db:
+            take = db.execute("SELECT project_id,side,state FROM takes WHERE id=?", (take_id,)).fetchone()
+            if not take or take["project_id"] != project_id or take["side"] != "A" or take["state"] != "saved":
+                raise Conflict("Only a saved Side A can establish this boundary")
+            db.execute("INSERT INTO side_boundaries(project_id,capture_generation,end_frame,take_id,recorded_at) "
+                       "VALUES(?,?,?,?,?) ON CONFLICT(project_id,capture_generation) DO UPDATE SET "
+                       "end_frame=excluded.end_frame,take_id=excluded.take_id,recorded_at=excluded.recorded_at",
+                       (project_id, capture_generation, end_frame, take_id, now))
+
+    def get_side_boundary(self, project_id: str, capture_generation: str | None = None):
+        with self.connect() as db:
+            if capture_generation is None:
+                row = db.execute("SELECT * FROM side_boundaries WHERE project_id=? "
+                                 "ORDER BY recorded_at DESC LIMIT 1", (project_id,)).fetchone()
+            else:
+                row = db.execute("SELECT * FROM side_boundaries WHERE project_id=? AND capture_generation=?",
+                                 (project_id, capture_generation)).fetchone()
+        return dict(row) if row else None
+
+    def close_take(self, request_id: str, *, expected_frames: int,
+                   side_a_end_frame: int | None = None) -> dict:
         """Record the writer's closed frame count before attempting publication."""
         if type(expected_frames) is not int or expected_frames <= 0:
             raise InvalidMaster("A saved side must contain complete audio frames")
+        if side_a_end_frame is not None and (type(side_a_end_frame) is not int or side_a_end_frame < 0):
+            raise InvalidMaster("Side A boundary must be a non-negative capture frame")
         with self.transaction() as db:
-            row = db.execute("SELECT take_id,state FROM intents WHERE request_id=?", (request_id,)).fetchone()
+            row = db.execute("SELECT take_id,state,side,side_a_end_frame FROM intents WHERE request_id=?", (request_id,)).fetchone()
             if not row:
                 raise KeyError(request_id)
-            if row["state"] == "closed":
+            if row["state"] in ("closed", "verified"):
                 current = db.execute("SELECT expected_frames FROM intents WHERE request_id=?", (request_id,)).fetchone()[0]
                 if current != expected_frames:
                     raise Conflict("Closed writer frame count changed")
+                if side_a_end_frame is not None:
+                    if row["side"] != "A":
+                        raise InvalidMaster("Only Side A can persist a Side A boundary")
+                    if row["side_a_end_frame"] is not None and row["side_a_end_frame"] != side_a_end_frame:
+                        raise Conflict("Side A capture boundary changed after close")
+                    db.execute("UPDATE intents SET side_a_end_frame=COALESCE(side_a_end_frame,?),updated_at=? WHERE request_id=?",
+                               (side_a_end_frame, self._now(), request_id))
                 return self.get_intent(request_id)
             if row["state"] != "writing":
                 raise Conflict("Recording intent is no longer writable")
-            db.execute("UPDATE intents SET state='closed',expected_frames=?,updated_at=? WHERE request_id=?",
-                       (expected_frames, self._now(), request_id))
+            if side_a_end_frame is not None and row["side"] != "A":
+                raise InvalidMaster("Only Side A can persist a Side A boundary")
+            if row["side_a_end_frame"] is not None and side_a_end_frame is not None and row["side_a_end_frame"] != side_a_end_frame:
+                raise Conflict("Side A capture boundary changed after close")
+            db.execute("UPDATE intents SET state='closed',expected_frames=?,side_a_end_frame=COALESCE(side_a_end_frame,?),updated_at=? WHERE request_id=?",
+                       (expected_frames, side_a_end_frame, self._now(), request_id))
             db.execute("UPDATE takes SET state='finalizing' WHERE id=? AND state='recording'", (row["take_id"],))
         return self.get_intent(request_id)
 
@@ -432,6 +484,9 @@ class Catalog:
         receipt = {"take_id": intent["take_id"], "project_id": intent["project_id"],
                    "side": intent["side"], "locator": intent["intended_locator"],
                    "sha256": digest, **info}
+        if intent["side"] == "A" and intent.get("side_a_end_frame") is not None:
+            receipt["side_a_end_frame"] = intent["side_a_end_frame"]
+            receipt["capture_generation"] = intent["capture_generation"]
         now = self._now()
         with self.transaction() as db:
             current = db.execute("SELECT state FROM intents WHERE request_id=?", (request_id,)).fetchone()
@@ -442,6 +497,12 @@ class Catalog:
             db.execute("UPDATE takes SET state='saved',locator=?,master_sha256=?,frames=?,sample_rate=?,channels=?,sample_width=?,published_at=? WHERE id=?",
                        (intent["intended_locator"], digest, info["frames"], info["sample_rate"],
                         info["channels"], info["sample_width"], now, intent["take_id"]))
+            if intent["side"] == "A" and intent.get("side_a_end_frame") is not None:
+                db.execute("INSERT INTO side_boundaries(project_id,capture_generation,end_frame,take_id,recorded_at) "
+                           "VALUES(?,?,?,?,?) ON CONFLICT(project_id,capture_generation) DO UPDATE SET "
+                           "end_frame=excluded.end_frame,take_id=excluded.take_id,recorded_at=excluded.recorded_at",
+                           (intent["project_id"], intent["capture_generation"], intent["side_a_end_frame"],
+                            intent["take_id"], now))
         # Once the durable catalog receipt exists, remove the redundant staging
         # hard link. A crash before this cleanup leaves a harmless duplicate.
         try:

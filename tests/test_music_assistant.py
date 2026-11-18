@@ -1,5 +1,6 @@
 import io
 import json
+import time
 import unittest
 
 from music_assistant import MusicAssistantObserver, player_is_audible
@@ -54,7 +55,7 @@ class MusicAssistantTests(unittest.TestCase):
                 timing=PlaybackTiming(clock=lambda: next(clock)),
                 sender=lambda play, **_metadata: sent.append(play) is None,
             )
-            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: 100)
+            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=time.time)
             state = {"scrobble": True, "signal": True, "track": {"artist": "A", "title": "B"}}
 
             for _ in range(240):
@@ -74,7 +75,8 @@ class MusicAssistantTests(unittest.TestCase):
             def audible(self):
                 return True
 
-        clock = iter((10, 30))
+        base = int(time.time())
+        clock = iter((base, base, base, base, base + 20))
         observed = []
         delivery = SimpleNamespace(
             timing=SimpleNamespace(previous=None),
@@ -86,7 +88,7 @@ class MusicAssistantTests(unittest.TestCase):
         monitor.tick(status, lambda _track, _local: True)
         monitor.tick(status, lambda _track, _local: True)
         monitor.tick({**status, "track_epoch": 3}, lambda _track, _local: True)
-        self.assertEqual([key[1] for key in observed], [10, 10, 30])
+        self.assertEqual([key[1] for key in observed], [base, base, base + 20])
 
     def test_verified_duration_allows_a_short_track_to_qualify_after_half(self):
         from music_assistant import ScrobbleMonitor
@@ -107,7 +109,7 @@ class MusicAssistantTests(unittest.TestCase):
                 timing=PlaybackTiming(clock=lambda: next(elapsed)),
                 sender=lambda play, **_: sent.append(play.seconds) is None,
             )
-            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: 100)
+            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=time.time)
             state = {"scrobble": True, "signal": True,
                      "track": {"artist": "Artist", "title": "Song", "duration_seconds": 90}}
             for _ in range(45):
@@ -134,7 +136,7 @@ class MusicAssistantTests(unittest.TestCase):
                 timing=PlaybackTiming(clock=lambda: next(elapsed)),
                 sender=lambda play, **_: sent.append(play.receipt_key) is None,
             )
-            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: 100)
+            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=time.time)
             state = {"scrobble": True, "signal": True, "local_listening": True,
                      "track": {"artist": "Artist", "title": "Song", "duration_seconds": 60}}
             for _ in range(75):

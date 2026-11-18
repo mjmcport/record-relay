@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import math
 from time import monotonic
+from uuid import NAMESPACE_URL, uuid5
 
 
 @dataclass
@@ -12,6 +13,8 @@ class ListeningInstance:
     duration: float | None
     seconds: float = 0
     submitted: bool = False
+    play_id: str | None = None
+    capture_generation: str | None = None
 
     def add_interval(self, seconds, *, audible, same_track):
         """Count only observed intervals with matching, audible playback."""
@@ -68,6 +71,7 @@ class ListeningCoordinator:
         self.play = None
         self.track_epoch = None
         self.local_listening = False
+        self.clock_trusted = False
 
     @staticmethod
     def identity(track):
@@ -86,24 +90,50 @@ class ListeningCoordinator:
         return {"seconds": int(play.seconds), "required_seconds": play.required_seconds,
                 "submitted": play.submitted}
 
-    def tick(self, status, still_enabled):
+    def tick(self, status, still_enabled, *, queue_consent=None):
         track = status.get("track")
-        if not status.get("scrobble") or not status.get("signal") or not isinstance(track, dict):
+        if not status.get("scrobble"):
+            if hasattr(self.delivery, "cancel_queued"):
+                self.delivery.cancel_queued()
             self.delivery.timing.previous = None
+            return False
+        wall_now = int(self.wall_clock())
+        self.clock_trusted = wall_now >= 1_577_836_800
+        if not self.clock_trusted:
+            self.delivery.timing.previous = None
+            return False
+        if not status.get("signal") or not isinstance(track, dict):
+            self.delivery.timing.previous = None
+            if hasattr(self.delivery, "flush_queued"):
+                self.delivery.flush_queued(still_enabled=lambda: (
+                    queue_consent() if queue_consent is not None else bool(status.get("scrobble"))))
             return False
         identity = self.identity(track)
         if identity is None:
             self.delivery.timing.previous = None
+            if hasattr(self.delivery, "flush_queued"):
+                self.delivery.flush_queued(still_enabled=lambda: (
+                    queue_consent() if queue_consent is not None else bool(status.get("scrobble"))))
             return False
         epoch = status.get("track_epoch")
+        capture_generation = status.get("capture_generation")
         duration = track.get("duration_seconds")
         if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
             duration = None
-        if self.play is None or self.play.track_id != identity or self.track_epoch != epoch:
-            self.play = ListeningInstance(identity, int(self.wall_clock()), duration)
+        if (self.play is None or self.track_epoch != epoch
+                or self.play.capture_generation != capture_generation):
+            occurrence = f"{capture_generation or 'unknown'}:{epoch}"
+            self.play = ListeningInstance(
+                identity, int(self.wall_clock()), duration,
+                play_id=str(uuid5(NAMESPACE_URL, occurrence)),
+                capture_generation=capture_generation)
             self.track_epoch = epoch
-        elif self.play.duration is None:
-            self.play.duration = duration
+        else:
+            # A later metadata refresh can correct a title without creating a
+            # second listening occurrence or resetting its verified intervals.
+            self.play.track_id = identity
+            if self.play.duration is None:
+                self.play.duration = duration
         local = status.get("local_listening") is True
         if local != self.local_listening:
             self.delivery.timing.previous = None

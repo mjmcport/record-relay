@@ -8,6 +8,8 @@ const recordButton = document.querySelector('#record-now');
 const bufferButton = document.querySelector('#save-recent');
 const stopButton = document.querySelector('#stop-side');
 const projectSelect = document.querySelector('#project-select');
+const liveToggle = document.querySelector('#live-view');
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 let state = {projects: [], history: {items: []}, capture: {recording: 'unavailable'}};
 let project = null;
 let side = 'A';
@@ -15,6 +17,17 @@ let active = null;
 let pinRevision = 0;
 let selectedRelease = null;
 let previousCaptureStatus = '';
+let rangeGeneration = null;
+let latestCapture = null;
+let pollTimer = null;
+let lastAlbumRefresh = 0;
+let lastVisualSequence = 0;
+let captureRefreshPending = false;
+let visualClientId = sessionStorage.getItem('record-relay-visual-client');
+if (!visualClientId) {
+  visualClientId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  sessionStorage.setItem('record-relay-visual-client', visualClientId);
+}
 
 async function request(path, {method = 'GET', body} = {}) {
   const response = await fetch(path, {
@@ -30,6 +43,35 @@ async function request(path, {method = 'GET', body} = {}) {
 
 function say(node, value) {
   if (node.textContent !== value) node.textContent = value;
+}
+
+function drawLiveView(samples) {
+  const canvas = document.querySelector('#live-canvas');
+  const context = canvas.getContext('2d');
+  const width = Math.max(1, canvas.clientWidth);
+  const height = Math.max(1, canvas.clientHeight);
+  const ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.strokeStyle = '#f4bb75';
+  context.lineWidth = 2;
+  context.beginPath();
+  if (Array.isArray(samples) && samples.length) {
+    samples.forEach((sample, index) => {
+      const value = Math.max(0, Math.min(1, Number(sample) || 0));
+      const x = index * width / (samples.length - 1);
+      const y = height / 2 - (value * height * .44);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+  } else {
+    context.moveTo(0, height / 2); context.lineTo(width, height / 2);
+  }
+  context.stroke();
 }
 
 function updateSideButtons() {
@@ -121,6 +163,9 @@ async function refresh() {
     label.value = '';
     say(document.querySelector('#album-heading'), 'Choose an album');
   }
+  if (project) {
+    state = await request('/api/album?project_id=' + encodeURIComponent(project.id));
+  }
   const saved = localStorage.getItem('record-relay-active-take');
   try { active = saved ? JSON.parse(saved) : null; }
   catch { localStorage.removeItem('record-relay-active-take'); active = null; }
@@ -137,6 +182,64 @@ async function refresh() {
 
 function updateCapture(value) {
   if (value.error) throw new Error(value.error);
+  latestCapture = value;
+  liveToggle.checked = value.live_view_client === true;
+  liveToggle.disabled = reducedMotionQuery.matches;
+  document.querySelector('#motion-note').hidden = !reducedMotionQuery.matches;
+  const liveCanvas = document.querySelector('#live-canvas');
+  liveCanvas.hidden = !liveToggle.checked;
+  if (liveToggle.checked) {
+    const sequence = Number(value.visual_sequence) || 0;
+    const age = value.visual_age_seconds;
+    if (sequence > lastVisualSequence && age != null && age < 0.5) {
+      drawLiveView(value.visual_samples);
+      lastVisualSequence = sequence;
+    }
+    const dropped = Number(value.visual_dropped_frames) || 0;
+    const statusText = age == null || age >= 0.5
+      ? 'Live view paused · waiting for a fresh input frame.'
+      : 'Latest waveform frame ' + age.toFixed(1) + ' sec ago.';
+    say(document.querySelector('#live-view-status'),
+      statusText + ' Visuals do not prove listening. ' + dropped + ' stale frames dropped.');
+  } else {
+    say(document.querySelector('#live-view-status'), 'Live view is off. No visualization frames are retained.');
+  }
+  const queueToggle = document.querySelector('#offline-queue');
+  queueToggle.checked = value.offline_queue === true;
+  const queue = document.querySelector('#listen-queue');
+  queue.replaceChildren();
+  for (const item of value.listen_queue || []) {
+    const row = document.createElement('li');
+    const summary = document.createElement('span');
+    summary.textContent = item.artist + ' · ' + item.title + ' · ' +
+      (item.state === 'pending' ? 'Held: delivery outcome may be uncertain; no automatic retry'
+        : 'Queued · expires ' + new Date(item.expires_at * 1000).toLocaleDateString());
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'secondary';
+    if (item.state === 'queued') {
+      remove.textContent = 'Delete';
+      remove.setAttribute('aria-label', 'Delete queued listen ' + item.title + ' by ' + item.artist);
+      remove.addEventListener('click', async () => {
+      try {
+        const result = await request('/control', {method: 'POST', body: {
+          action: 'delete_queued_listen', play_id: item.play_id,
+        }});
+        if (result.error) throw new Error(result.error);
+        await refreshCapture();
+      } catch (error) { say(message, error.message); }
+      });
+      row.append(summary, remove);
+    } else {
+      row.append(summary);
+    }
+    queue.append(row);
+  }
+  if (!(value.listen_queue || []).length) {
+    const empty = document.createElement('li');
+    empty.textContent = 'No queued listens.';
+    queue.append(empty);
+  }
   if (value.recording_id) {
     active = {request_id: value.recording_id, side: value.recording_side || active?.side || side};
     side = active.side;
@@ -146,8 +249,42 @@ function updateCapture(value) {
     active = null;
   }
   const activeSide = value.recording_side || active?.side || side;
+  const bounds = {oldest: value.buffered_oldest_frame, newest: value.buffered_newest_frame,
+    generation: value.capture_generation};
+  const boundary = state.side_a_boundary?.capture_generation === bounds.generation
+    ? state.side_a_boundary.end_frame
+    : (value.side_a_end_capture_generation === bounds.generation ? value.side_a_end_frame : null);
+  const rangePanel = document.querySelector('#side-b-range');
+  const range = document.querySelector('#side-b-start');
+  rangePanel.hidden = side !== 'B' || !(Number.isInteger(bounds.oldest) &&
+    Number.isInteger(bounds.newest) && bounds.newest > bounds.oldest);
+  if (!rangePanel.hidden) {
+    range.min = String(bounds.oldest);
+    range.max = String(bounds.newest - 1);
+    range.step = '4800';
+    if (rangeGeneration !== bounds.generation) {
+      range.value = String(boundary != null && boundary >= bounds.oldest && boundary < bounds.newest
+        ? boundary : bounds.oldest);
+      rangeGeneration = bounds.generation;
+      document.querySelector('#overlap-confirm').checked = false;
+    } else {
+      range.value = String(Math.max(bounds.oldest, Math.min(bounds.newest - 1, Number(range.value))));
+    }
+    const selected = Number(range.value);
+    const frameSeconds = Math.max(0, selected - bounds.oldest) / 48000;
+    range.setAttribute('aria-valuetext', `${frameSeconds.toFixed(1)} seconds into retained audio`);
+    say(document.querySelector('#side-b-range-summary'),
+      (boundary == null ? 'No saved Side A boundary is known; start may include Side A audio. '
+        : selected < boundary ? 'This start overlaps the saved Side A boundary. Confirm below. '
+          : 'Starts at/after the saved Side A boundary. ') +
+      'Selected offset: ' + frameSeconds.toFixed(1) + ' sec into the retained window.');
+    document.querySelector('#overlap-confirm-label').hidden = !(boundary != null && selected < boundary);
+    const unknown = document.querySelector('#unknown-boundary-confirm-label');
+    unknown.hidden = boundary != null;
+    if (boundary != null) document.querySelector('#unknown-boundary-confirm').checked = false;
+  }
   const statusText = value.recording === 'recording'
-    ? `Recording Side ${activeSide} · ${(value.recording_elapsed_seconds || 0).toFixed(1)} sec`
+    ? `Recording Side ${activeSide}`
     : value.recording === 'finalizing' ? `Finalizing Side ${activeSide}`
     : value.recording === 'failed' ? `Side ${activeSide} failed; not saved`
     : value.recording === 'finished' ? `Side ${activeSide} ready to save`
@@ -162,7 +299,10 @@ function updateCapture(value) {
   const age = value.input_age_seconds == null ? '' : ` · ${value.input_age_seconds.toFixed(1)} sec ago`;
   const frames = value.recording_frames ? ` · ${value.recording_frames.toLocaleString()} frames${value.recording_limit_frames ? ` of ${value.recording_limit_frames.toLocaleString()}` : ''}` : '';
   const preRoll = value.recording_prefix_frames ? ` · ${value.recording_prefix_frames.toLocaleString()} pre-roll frames` : '';
-  const detailText = `${inputText}${age} · ${Math.floor(value.buffered_seconds || 0)} sec in recent buffer${frames}${preRoll}${value.identify ? ' · Identify on' : ' · Identify off'}${value.scrobble ? ' · Scrobble on' : ' · Scrobble off'}`;
+  const clock = value.scrobble && value.listenbrainz_clock_trusted === false
+    ? ' · ListenBrainz paused: system clock is untrusted' : '';
+  const elapsed = value.recording_elapsed_seconds == null ? '' : ` · ${value.recording_elapsed_seconds.toFixed(1)} sec elapsed`;
+  const detailText = `${inputText}${age} · ${Math.floor(value.buffered_seconds || 0)} sec in recent buffer${frames}${preRoll}${elapsed}${value.identify ? ' · Identify on' : ' · Identify off'}${value.scrobble ? ' · Scrobble on' : ' · Scrobble off'}${clock}`;
   say(detail, detailText);
   say(sideDetail, side === 'B'
     ? (value.late_save_uncertain
@@ -185,23 +325,38 @@ function updateCapture(value) {
 }
 
 async function refreshCapture() {
+  if (captureRefreshPending) return;
+  captureRefreshPending = true;
   try {
-    updateCapture(await request('/control', {method: 'POST', body: {action: 'status'}}));
+    const capture = await request('/control', {method: 'POST', body: {
+      action: 'status', project_id: project?.id || null,
+      ...(document.querySelector('#live-view').checked && !document.hidden
+        ? {visual_client_id: visualClientId} : {}),
+    }});
+    updateCapture(capture);
   } catch (error) {
     say(captureStatus, previousCaptureStatus ? `${previousCaptureStatus} · status unavailable` : 'Capture session unavailable');
     say(detail, error.message);
     recordButton.disabled = true;
     bufferButton.disabled = true;
     stopButton.hidden = true;
+  } finally {
+    captureRefreshPending = false;
   }
 }
 
 async function startTake(buffered) {
   if (!project) { say(message, 'Create or select an album first.'); return; }
   try {
-    const value = await request('/api/takes/start', {method: 'POST', body: {
+    const body = {
       project_id: project.id, revision: project.revision, side, buffered, limit_seconds: 1800,
-    }});
+    };
+    if (buffered && side === 'B') {
+      body.buffered_start_frame = Number(document.querySelector('#side-b-start').value);
+      body.overlap_ack = document.querySelector('#overlap-confirm').checked;
+      body.unknown_boundary_ack = document.querySelector('#unknown-boundary-confirm').checked;
+    }
+    const value = await request('/api/takes/start', {method: 'POST', body});
     active = {request_id: value.request_id, side: value.side};
     localStorage.setItem('record-relay-active-take', JSON.stringify(active));
     say(message, `Recording Side ${side}. You can close this page and reconnect later.`);
@@ -231,6 +386,9 @@ document.querySelectorAll('[data-side]').forEach(button => button.addEventListen
   say(document.querySelector('#side-heading'), `Side ${side}`);
   refreshCapture();
 }));
+document.querySelector('#side-b-start').addEventListener('input', () => {
+  if (latestCapture) updateCapture(latestCapture);
+});
 
 projectSelect.addEventListener('change', async event => {
   localStorage.setItem('record-relay-project', event.target.value);
@@ -337,10 +495,70 @@ for (const [id, action] of [['identify', 'identify'], ['scrobble', 'scrobble']])
   });
 }
 
+document.querySelector('#offline-queue').addEventListener('change', async event => {
+  try {
+    const value = await request('/control', {method: 'POST', body: {
+      action: 'offline_queue', enabled: event.target.checked,
+    }});
+    if (value.error) throw new Error(value.error);
+    updateCapture(value);
+    say(message, 'Offline listen queue ' + (event.target.checked ? 'enabled.' : 'disabled.'));
+  } catch (error) {
+    event.target.checked = false;
+    say(message, error.message);
+  }
+});
+
+document.querySelector('#live-view').addEventListener('change', async event => {
+  try {
+    const value = await request('/control', {method: 'POST', body: {
+      action: 'visual_client', enabled: event.target.checked,
+      visual_client_id: visualClientId,
+    }});
+    if (value.error) throw new Error(value.error);
+    updateCapture(value);
+    startPolling();
+  } catch (error) {
+    event.target.checked = false;
+    say(message, error.message);
+  }
+});
+
+function startPolling() {
+  if (pollTimer !== null) clearInterval(pollTimer);
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  pollTimer = setInterval(() => {
+    if (document.hidden) return;
+    refreshCapture();
+    if (Date.now() - lastAlbumRefresh >= 2000) {
+      lastAlbumRefresh = Date.now();
+      request('/api/album').then(data => { state = data; paintHistory(); }).catch(() => {});
+    }
+  }, document.querySelector('#live-view').checked ? (motionQuery.matches ? 1000 : 100) : 2000);
+}
+
 updateSideButtons();
 refresh().then(refreshCapture).catch(error => { say(message, `Local catalog unavailable: ${error.message}`); });
-setInterval(() => {
-  if (document.hidden) return;
-  refreshCapture();
-  request('/api/album').then(data => { state = data; paintHistory(); }).catch(() => {});
-}, 2000);
+startPolling();
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && document.querySelector('#live-view').checked) {
+    request('/control', {method: 'POST', body: {
+      action: 'visual_client', enabled: false, visual_client_id: visualClientId,
+    }}).catch(() => {});
+  } else if (!document.hidden) {
+    refreshCapture();
+    startPolling();
+  }
+});
+reducedMotionQuery.addEventListener('change', event => {
+  liveToggle.disabled = event.matches;
+  document.querySelector('#motion-note').hidden = !event.matches;
+  if (event.matches && liveToggle.checked) {
+    liveToggle.checked = false;
+    request('/control', {method: 'POST', body: {
+      action: 'visual_client', enabled: false, visual_client_id: visualClientId,
+    }}).then(updateCapture).catch(() => {});
+    say(message, 'Live waveform turned off because reduced motion is enabled.');
+  }
+  startPolling();
+});

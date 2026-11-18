@@ -1,4 +1,5 @@
 import unittest
+import time
 import json
 from pathlib import Path
 import sys
@@ -43,14 +44,15 @@ class ListeningTests(unittest.TestCase):
                     play.submitted = True
                     return True
                 return False
-        coordinator = ListeningCoordinator(None, Delivery(), wall_clock=lambda: 500)
+        now = int(time.time())
+        coordinator = ListeningCoordinator(None, Delivery(), wall_clock=lambda: now)
         status = {"scrobble": True, "signal": True, "local_listening": True,
                   "track_epoch": 4, "track": {"artist": "Artist", "title": "Song",
                                                "duration_seconds": 60}}
         for _ in range(32):
             coordinator.tick(status, lambda _track, local: local)
         self.assertEqual(len(sent), 1)
-        self.assertEqual(coordinator.play.started_at, 500)
+        self.assertEqual(coordinator.play.started_at, now)
 
     def test_rechecks_play_identity_after_observer_returns(self):
         sent = []
@@ -67,11 +69,24 @@ class ListeningTests(unittest.TestCase):
                 if kwargs["enabled"] and kwargs["audible"]:
                     sent.append(play)
                 return False
-        coordinator = ListeningCoordinator(Observer(), Delivery(), wall_clock=lambda: 1)
+        coordinator = ListeningCoordinator(Observer(), Delivery(), wall_clock=lambda: int(time.time()))
         status = {"scrobble": True, "signal": True, "local_listening": False,
                   "track_epoch": 1, "track": {"artist": "Artist", "title": "Song"}}
         coordinator.tick(status, lambda _track, _local: state["epoch"] == 1)
         self.assertFalse(sent)  # delivery is gated after observer I/O
+
+    def test_untrusted_wall_clock_holds_listen_submission(self):
+        sent = []
+        class Delivery:
+            timing = PlaybackTiming()
+            def observe(self, *args, **kwargs):
+                sent.append(args)
+        coordinator = ListeningCoordinator(None, Delivery(), wall_clock=lambda: 100)
+        status = {"scrobble": True, "signal": True, "local_listening": True,
+                  "track_epoch": 1, "track": {"artist": "Artist", "title": "Song"}}
+        self.assertFalse(coordinator.tick(status, lambda _track, _local: True))
+        self.assertFalse(coordinator.clock_trusted)
+        self.assertEqual(sent, [])
 
     def test_scrobble_setup_writes_listenbrainz_only_config(self):
         from integrations import setup_scrobble

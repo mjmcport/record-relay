@@ -11,6 +11,35 @@ from session import Session
 
 
 class AlbumServiceTests(unittest.TestCase):
+    def test_side_b_without_saved_boundary_requires_explicit_acknowledgment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = root / "library"
+            library.mkdir()
+            catalog = Catalog(root / "state" / "catalog.sqlite", library)
+            project = catalog.create_project("Fixture")
+            saved = []
+
+            def control(_path, packet):
+                command = json.loads(packet)
+                if command["action"] == "status":
+                    return json.dumps({"capture_generation": "g", "boot_generation": "b",
+                                       "buffered_oldest_frame": 0,
+                                       "buffered_newest_frame": 48000}).encode()
+                saved.append(command)
+                return b"{}"
+
+            service = AlbumService(catalog, root / "control.sock", send=control)
+            request = {"project_id": project["id"], "revision": 1, "side": "B", "buffered": True,
+                       "buffered_start_frame": 0}
+            with self.assertRaisesRegex(ValueError, "No saved Side A boundary"):
+                service.start_take(request)
+            self.assertFalse(saved)
+            request["unknown_boundary_ack"] = True
+            started = service.start_take(request)
+            self.assertEqual(started["state"], "recording")
+            self.assertEqual(saved[0]["action"], "save_buffer")
+
     def test_take_is_written_to_staging_then_published_with_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -162,16 +191,24 @@ class AlbumServiceTests(unittest.TestCase):
                 if command["action"] in ("record", "save_buffer"):
                     session.start_recording(command["name"], command["limit"],
                                             buffered=command["action"] == "save_buffer",
-                                            request_id=command["request_id"], side=command["side"])
+                                            request_id=command["request_id"], side=command["side"],
+                                            buffered_start_frame=command.get("buffered_start_frame"),
+                                            expected_capture_generation=command.get("expected_capture_generation"),
+                                            overlap_ack=command.get("overlap_ack", False),
+                                            side_a_boundary_frame=command.get("side_a_boundary_frame"))
                     return b"{}"
                 if command["action"] == "stop":
                     frames = session.stop_recording(expected_id=command["request_id"])
-                    return json.dumps({"recorded_frames": frames}).encode()
+                    latest = session.status()
+                    return json.dumps({"recorded_frames": frames,
+                                       "side_a_end_frame": latest["side_a_end_frame"],
+                                       "side_a_end_capture_generation":
+                                           latest["side_a_end_capture_generation"]}).encode()
                 raise AssertionError(command)
 
             service = AlbumService(catalog, root / "capture.sock", send=control)
             take = service.start_take({"project_id": project["id"], "revision": 1, "side": "A"})
-            pcm = b"\x11\x00\x22\x00" * 4800
+            pcm = b"\x00\x10\x00\x10" * 4800
             output = io.BytesIO()
             session.run(io.BytesIO(pcm), output)
             receipt = service.stop_take({"request_id": take["request_id"]})
@@ -180,6 +217,26 @@ class AlbumServiceTests(unittest.TestCase):
                 self.assertEqual(saved.getnframes(), 4800)
                 self.assertEqual(saved.readframes(4800), pcm)
             self.assertEqual(output.getvalue(), pcm)
+            generation = session.status()["capture_generation"]
+            boundary = catalog.get_side_boundary(project["id"], generation)
+            self.assertEqual(boundary["end_frame"], 4800)
+            self.assertEqual(receipt["side_a_end_frame"], boundary["end_frame"])
+            with catalog.connect() as db:
+                row = db.execute("SELECT side_a_end_frame FROM intents WHERE request_id=?",
+                                 (take["request_id"],)).fetchone()
+            self.assertEqual(row[0], boundary["end_frame"])
+
+            reopened = Catalog(root / "state" / "catalog.sqlite", library)
+            self.assertEqual(reopened.get_side_boundary(project["id"], generation)["end_frame"], 4800)
+            session.run(io.BytesIO(pcm), io.BytesIO())
+            side_b = AlbumService(reopened, root / "capture.sock", send=control)
+            take_b = side_b.start_take({"project_id": project["id"], "revision": 1,
+                                        "side": "B", "buffered": True})
+            # The saved Side A boundary is the default start despite the
+            # additional audio already retained after it.
+            self.assertEqual(session.status()["recording_prefix_frames"], 4800)
+            receipt_b = side_b.stop_take({"request_id": take_b["request_id"]})
+            self.assertEqual(receipt_b["frames"], 4800)
 
 
 if __name__ == "__main__":

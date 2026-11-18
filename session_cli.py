@@ -7,7 +7,8 @@ import socket
 from socketserver import StreamRequestHandler, UnixStreamServer
 import sys
 from time import monotonic, time
-from threading import Thread
+from threading import Event, Lock, Thread
+import uuid
 
 from session import Session
 from providers import authenticated_open, recognize_audd, shazam_recognizer, tls_transport
@@ -45,6 +46,22 @@ def serve(args):
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError("The control socket needs an owner-only directory")
     session = Session(args.library)
+    visual_clients = {}
+    visual_lock = Lock()
+    visual_stop = Event()
+
+    def expire_visual_clients():
+        while not visual_stop.wait(0.5):
+            now = monotonic()
+            with visual_lock:
+                for client_id, expiry in list(visual_clients.items()):
+                    if expiry <= now:
+                        visual_clients.pop(client_id, None)
+                desired = bool(visual_clients)
+            session.set_live_view(desired)
+
+    visual_thread = Thread(target=expire_visual_clients, daemon=True, name="record-relay-visual-leases")
+    visual_thread.start()
     token = private_text(args.audd_token_file).strip() if args.audd_token_file else None
     if token is not None and not token.isalnum():
         raise ValueError("Invalid AudD token file")
@@ -85,6 +102,14 @@ def serve(args):
             try:
                 data = json.loads(self.rfile.readline(4096))
                 action = data["action"]
+                client_id = data.get("visual_client_id")
+                if client_id is not None:
+                    try:
+                        client_id = str(uuid.UUID(client_id))
+                    except (ValueError, TypeError, AttributeError) as error:
+                        raise ValueError("Invalid live view client ID") from error
+                    with visual_lock:
+                        visual_clients[client_id] = monotonic() + 5
                 if action == "identify":
                     if type(data["enabled"]) is not bool:
                         raise ValueError("Identify expects a boolean")
@@ -101,23 +126,68 @@ def serve(args):
                     if type(data["enabled"]) is not bool:
                         raise ValueError("Local listening expects a boolean")
                     session.set_local_listening(data["enabled"])
+                elif action == "visual_client":
+                    if type(data["enabled"]) is not bool:
+                        raise ValueError("Live view client expects a boolean")
+                    if client_id is None:
+                        raise ValueError("A live view client ID is required")
+                    with visual_lock:
+                        if data["enabled"]:
+                            visual_clients[client_id] = monotonic() + 5
+                        else:
+                            visual_clients.pop(client_id, None)
+                        desired = bool(visual_clients)
+                    session.set_live_view(desired)
+                elif action == "offline_queue":
+                    if type(data["enabled"]) is not bool:
+                        raise ValueError("Offline queue expects a boolean")
+                    if monitor is None and data["enabled"]:
+                        raise ValueError("Configure ListenBrainz first")
+                    if monitor is not None:
+                        monitor.delivery.queue_enabled = data["enabled"]
+                        if not data["enabled"]:
+                            monitor.delivery.cancel_queued()
+                elif action == "delete_queued_listen":
+                    play_id = data.get("play_id")
+                    if not isinstance(play_id, str) or len(play_id) > 80 or monitor is None:
+                        raise ValueError("Invalid queued listen ID")
+                    if not monitor.delivery.delete_queued(play_id):
+                        raise ValueError("This item is no longer queued or is already being sent")
                 elif action in ("record", "save_buffer"):
                     session.start_recording(data["name"], data.get("limit", 1800),
                                             buffered=action == "save_buffer",
                                             request_id=data.get("request_id"),
-                                            side=data.get("side"))
+                                            side=data.get("side"),
+                                            buffered_start_frame=data.get("buffered_start_frame"),
+                                            expected_capture_generation=data.get("expected_capture_generation"),
+                                            overlap_ack=data.get("overlap_ack", False),
+                                            side_a_boundary_frame=data.get("side_a_boundary_frame"))
                 elif action == "stop":
                     frames = session.stop_recording(expected_id=data.get("request_id"))
-                    self.wfile.write(json.dumps({"recorded_frames": frames}).encode() + b"\n")
+                    latest = session.status()
+                    self.wfile.write(json.dumps({"recorded_frames": frames,
+                                                 "side_a_end_frame": latest.get("side_a_end_frame"),
+                                                 "side_a_end_capture_generation": latest.get(
+                                                     "side_a_end_capture_generation")}).encode() + b"\n")
                     return
                 elif action != "status":
                     raise ValueError("Unknown action")
                 result = session.status()
+                with visual_lock:
+                    result["live_view_clients"] = len(visual_clients)
+                    result["live_view_client"] = client_id in visual_clients if client_id else False
                 if recognition_worker is not None:
                     result["recognition_error"] = recognition_worker.error
                 if scrobble_worker is not None:
                     result["scrobble_error"] = scrobble_worker.error
                     result["scrobble_progress"] = monitor.progress(result)
+                if monitor is not None:
+                    result["offline_queue"] = monitor.delivery.queue_enabled
+                    result["listen_queue"] = monitor.delivery.queued()
+                    result["listenbrainz_clock_trusted"] = monitor.clock_trusted
+                else:
+                    result["offline_queue"] = False
+                    result["listen_queue"] = []
             except (ValueError, KeyError, TypeError, AttributeError, RuntimeError, OSError) as error:
                 result = {"error": str(error)}
             self.wfile.write(json.dumps(result).encode() + b"\n")
@@ -129,10 +199,12 @@ def serve(args):
                 lambda: session.status()["identify"],
             )
         if monitor is not None:
+            monitor.delivery.queue_enabled = bool(config.get("offline_queue", False))
             scrobble_worker = RecognitionWorker(
                 lambda: monitor.tick(
                     session.status(),
-                    lambda track, local: still_listening(session, track, local, monitor.track_epoch)),
+                    lambda track, local: still_listening(session, track, local, monitor.track_epoch),
+                    queue_consent=lambda: bool(session.status().get("scrobble"))),
                 lambda: True, interval=1,
             )
         worker = Thread(target=server.serve_forever, daemon=True)
@@ -148,6 +220,10 @@ def serve(args):
             try:
                 session.stop_recording()
             finally:
+                visual_stop.set()
+                visual_thread.join(1)
+                session.set_live_view(False)
+                session.close_live_view()
                 args.socket.unlink()
 
 

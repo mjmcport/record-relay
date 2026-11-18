@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
+import time
 from urllib.request import Request, urlopen
 
 from music_assistant import MusicAssistantObserver, ScrobbleMonitor
@@ -53,7 +54,7 @@ class ScrobbleHTTPTests(unittest.TestCase):
                     timing=PlaybackTiming(clock=lambda: next(now)),
                     sender=partial(send_listen, transport=local_stub),
                 )
-                monitor = ScrobbleMonitor(observer, delivery, wall_clock=lambda: 1000)
+                monitor = ScrobbleMonitor(observer, delivery, wall_clock=time.time)
                 state = {"scrobble": True, "signal": True,
                          "track": {"artist": "Artist", "title": "Song", "album": "Record"}}
                 for _ in range(245):

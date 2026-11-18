@@ -26,6 +26,14 @@ window.addEventListener("beforeunload", event => {
 const confirmed = new Set();
 const trackTags = new Map();
 
+function resetFingerprintConsent() {
+  const consent = el("acoustid-consent");
+  if (consent.checked) {
+    consent.checked = false;
+    consent.dispatchEvent(new Event("change"));
+  }
+}
+
 async function sideRequest(action, payload) {
   const response = await fetch("/recordings/" + action, {
     method: "POST",
@@ -189,6 +197,7 @@ function render() {
     heading.setAttribute("aria-pressed", String(frame === selectedFrame));
     heading.setAttribute("aria-label", "Seek track start at " + seconds.toFixed(3) + " seconds: " + (tags.title || "Track " + (index + 1)));
     heading.onclick = () => {
+      if (frame !== selectedFrame) resetFingerprintConsent();
       selectedFrame = frame;
       player.currentTime = seconds;
       render();
@@ -280,6 +289,60 @@ function renderEditor() {
       el("editor-status").textContent = error.message;
     } finally {
       el("export-track").disabled = false;
+    }
+  };
+  el("fingerprint-track").onclick = async () => {
+    const button = el("fingerprint-track");
+    const interval = trackExportOptions(frame, index);
+    button.disabled = true;
+    el("fingerprint-result").textContent = "Creating a fingerprint for the reviewed interval…";
+    el("fingerprint-suggestions").replaceChildren();
+    try {
+      const response = await sideRequest("fingerprint", {
+        name: savedSide, start: interval.start, end: interval.end,
+        noncommercial_ack: el("acoustid-consent").checked,
+      });
+      const result = await response.json();
+      const target = el("fingerprint-suggestions");
+      target.replaceChildren();
+      const candidates = result.matches.flatMap(match =>
+        match.recordings.map(recording => ({...recording, score: match.score})));
+      if (!candidates.length) {
+        el("fingerprint-result").textContent = "No AcoustID match was found. Nothing was changed.";
+      } else {
+        el("fingerprint-result").textContent = `AcoustID returned ${candidates.length} suggestions below. Choose one to fill editable fields, then confirm tags yourself.`;
+        for (const candidate of candidates) {
+          const row = document.createElement("li");
+          const label = document.createElement("span");
+          label.textContent = candidate.title + (candidate.artist ? " · " + candidate.artist : "") +
+            " · " + Math.round(candidate.score * 100) + "%";
+          row.append(label);
+          if (candidate.artist) {
+            const use = document.createElement("button");
+            use.type = "button";
+            use.className = "secondary";
+            use.textContent = "Use as track suggestions";
+            use.onclick = () => {
+              tags.title = candidate.title;
+              tags.artist = candidate.artist;
+              confirmed.delete(frame);
+              trackTags.set(frame, tags);
+              el("track-title").value = candidate.title;
+              el("track-artist").value = candidate.artist;
+              dirty();
+              el("editor-status").textContent =
+                "Suggestions filled. Review them and use Confirm tags to accept.";
+            };
+            row.append(use);
+          }
+          target.append(row);
+        }
+      }
+    } catch (error) {
+      el("fingerprint-result").textContent = error.message;
+      el("fingerprint-suggestions").replaceChildren();
+    } finally {
+      button.disabled = !el("acoustid-consent").checked;
     }
   };
 }
@@ -457,6 +520,11 @@ el("cover").onchange = () => {
   if (artworkUrl) el("cover-preview").src = artworkUrl;
   else el("cover-preview").removeAttribute("src");
 };
+el("acoustid-consent").addEventListener("change", event => {
+  el("fingerprint-track").disabled = !event.target.checked;
+  el("fingerprint-result").textContent = "";
+  el("fingerprint-suggestions").replaceChildren();
+});
 el("remove-cover").onclick = () => {
   restoredCover = undefined;
   el("cover").value = "";

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
 import socket
+from time import monotonic
 from album_service import AlbumService
 from catalog import Catalog, Conflict, CatalogError
 from release_catalog import RevisionConflict
@@ -35,7 +36,7 @@ def forward(path, packet):
 
 
 def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network=None,
-                  album_service=None):
+                  album_service=None, acoustid_client_key=None, fpcalc="fpcalc"):
     address = f"{host}:{port}"
     token = secrets.token_urlsafe(32)
     directory = Path(__file__).parent
@@ -52,6 +53,16 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
     }
 
     analysis_lock = Lock()
+    fingerprint_lock = Lock()
+    last_fingerprint_request = [0.0]
+
+    def fingerprint_rate_available():
+        with fingerprint_lock:
+            now = monotonic()
+            if now - last_fingerprint_request[0] < 1 / 3:
+                return False
+            last_fingerprint_request[0] = now
+            return True
 
     def analyze(source):
         directory = Path(gettempdir()) / "waveforms"
@@ -258,6 +269,21 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                     result["matches"] = recorded_matches(source)
                     self.send_body(200, "application/json", json.dumps(result).encode())
                     return
+                if self.path == "/recordings/fingerprint":
+                    if not acoustid_client_key:
+                        raise ValueError("AcoustID is not configured. Lookup requires an application key.")
+                    if data.get("noncommercial_ack") is not True:
+                        raise ValueError("Confirm the non-commercial AcoustID lookup before sending a fingerprint.")
+                    if not fingerprint_rate_available():
+                        self.send_body(429, "application/json",
+                                       b'{"error":"AcoustID lookup is limited to three requests per second."}')
+                        return
+                    from fingerprinting import identify_saved_segment
+                    result = identify_saved_segment(
+                        source, data.get("start"), data.get("end"), acoustid_client_key,
+                        fpcalc=fpcalc)
+                    self.send_body(200, "application/json", json.dumps(result).encode())
+                    return
                 batch = self.path == "/recordings/export-side"
                 selections = data["tracks"] if batch else [data]
                 if not isinstance(selections, list) or not 1 <= len(selections) <= 100:
@@ -332,7 +358,10 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.send_header("Set-Cookie", f"rr_preview={token}; Path=/recordings/audio; HttpOnly; SameSite=Strict")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            self.wfile.write(content)
+            try:
+                self.wfile.write(content)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def allowed_client(self):
             return allowed_network is None or ip_address(self.client_address[0]) in allowed_network
@@ -347,7 +376,8 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
             url = urlsplit(self.path)
             route = url.path
             if album_service is not None and route == "/api/album":
-                self.send_body(200, "application/json", json.dumps(album_service.bootstrap()).encode())
+                project_id = parse_qs(url.query).get("project_id", [None])[0]
+                self.send_body(200, "application/json", json.dumps(album_service.bootstrap(project_id)).encode())
                 return
             if album_service is not None and route == "/api/release-pin":
                 project_id = parse_qs(url.query).get("project_id", [""])[0]
@@ -378,7 +408,8 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.send_error(403)
                 return
             if library is not None and self.path in (
-                    "/recordings/waveform", "/recordings/export", "/recordings/export-side", "/recordings/draft"):
+                    "/recordings/waveform", "/recordings/export", "/recordings/export-side",
+                    "/recordings/draft", "/recordings/fingerprint"):
                 self.review_action()
                 return
             if self.path != "/control":
@@ -446,6 +477,8 @@ if __name__ == "__main__":
     parser.add_argument("--state-dir", type=Path, help="Private persistent state directory (defaults inside the library)")
     parser.add_argument("--listen", default="127.0.0.1", help="Explicit IPv4 listening address")
     parser.add_argument("--allow-network", help="Trusted private subnet; every client is treated as an operator (no per-user authentication)")
+    parser.add_argument("--acoustid-client-key-file", type=Path,
+                        help="Private file containing an AcoustID application key (lookup only)")
     args = parser.parse_args()
     address = ip_address(args.listen)
     network = ip_network(args.allow_network) if args.allow_network else None
@@ -457,6 +490,16 @@ if __name__ == "__main__":
     if args.library is not None and (args.library.is_symlink() or not args.library.is_dir()):
         parser.error("Provide a real recording directory")
     album_service = None
+    acoustid_client_key = None
+    if args.acoustid_client_key_file:
+        secret_path = args.acoustid_client_key_file.expanduser()
+        secret_info = secret_path.lstat()
+        parent_info = secret_path.parent.stat()
+        if (secret_path.is_symlink() or not secret_path.is_file()
+                or secret_info.st_uid != os.getuid() or stat.S_IMODE(secret_info.st_mode) & 0o077
+                or parent_info.st_uid != os.getuid() or stat.S_IMODE(parent_info.st_mode) & 0o077):
+            parser.error("AcoustID key must be an owner-only file inside an owner-only directory")
+        acoustid_client_key = secret_path.read_text().strip()
     if args.library is not None:
         state_dir = args.state_dir or (args.library / ".record-relay")
         if state_dir.is_symlink():
@@ -483,5 +526,5 @@ if __name__ == "__main__":
         album_service = AlbumService(catalog, args.socket)
     with ThreadingHTTPServer((args.listen, args.port), panel_handler(
             args.socket, args.port, args.library, host=args.listen, allowed_network=network,
-            album_service=album_service)) as server:
+            album_service=album_service, acoustid_client_key=acoustid_client_key)) as server:
         server.serve_forever()

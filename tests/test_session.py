@@ -4,11 +4,56 @@ from threading import Event, Thread
 from pathlib import Path
 import unittest
 import wave
+from unittest.mock import patch
+import time
 
 from session import Session
 
 
 class SessionTests(unittest.TestCase):
+    def test_live_waveform_uses_bounded_latest_window_and_clears_when_off(self):
+        with TemporaryDirectory() as folder:
+            session = Session(folder)
+            session.set_live_view(True)
+            pcm = b"\x00\x10\x00\x10" * 4800
+            playback = io.BytesIO()
+            session.run(io.BytesIO(pcm), playback)
+            for _ in range(100):
+                frame = session.status()
+                if frame["visual_sequence"]:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(playback.getvalue(), pcm)
+            self.assertGreater(frame["visual_sequence"], 0)
+            self.assertEqual(len(frame["visual_samples"]), 64)
+            self.assertEqual(frame["visual_dropped_frames"], 0)
+            session.set_live_view(False)
+            self.assertIsNone(session.status()["visual_samples"])
+            session.close_live_view()
+
+    def test_failed_side_a_close_does_not_publish_a_boundary(self):
+        class BrokenRecorder:
+            def __init__(self):
+                self.closing = Event()
+                self.finished = Event()
+                self.error = None
+                self.offered_frames = 4
+            def stop(self):
+                raise OSError("synthetic close failure")
+            def add_match(self, *_args):
+                pass
+
+        with TemporaryDirectory() as folder:
+            session = Session(folder)
+            session.run(io.BytesIO(b"abcd" * 4), io.BytesIO())
+            broken = BrokenRecorder()
+            with patch("session.BackgroundRecording", return_value=broken):
+                session.start_recording("failed.wav", side="A")
+                with self.assertRaisesRegex(OSError, "close failure"):
+                    session.stop_recording()
+            self.assertIsNone(session.last_side_a_end_frame)
+            self.assertIsNone(session.last_side_a_capture_generation)
+
     def test_controls_and_recording_during_same_playback_stream(self):
         with TemporaryDirectory() as folder:
             session = Session(folder)

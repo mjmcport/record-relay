@@ -7,6 +7,8 @@ from threading import Lock
 from time import monotonic
 import struct
 import uuid
+from queue import Empty, Full, Queue
+from threading import Event, Thread
 
 from capture import FRAME_BYTES, RATE, RecentAudio, relay
 from fanout import BackgroundRecording
@@ -31,6 +33,8 @@ class Session:
         self.recording_started_at = None
         self.recording_prefix_frames = 0
         self.recording_limit_frames = 0
+        self.recording_start_frame = None
+        self.last_side_a_capture_generation = None
         self.last_side_a_end_frame = None
         self.last_side_a_generation = None
         self.boot_generation = str(uuid.uuid4())
@@ -48,6 +52,64 @@ class Session:
         self.last_recognition_duration = None
         self.signal = False
         self.last_audio = None
+        self.live_view = False
+        self.visual_sequence = 0
+        self.visual_samples = None
+        self.visual_dropped_frames = 0
+        self.visual_frame_time = None
+        self.visual_generation = 0
+        self._visual_blocks = Queue(maxsize=1)
+        self._visual_stop = Event()
+        self._visual_thread = None
+
+    def set_live_view(self, enabled):
+        with self.lock:
+            self.live_view = bool(enabled)
+            if not self.live_view:
+                self.visual_generation += 1
+                self.visual_samples = None
+                self.visual_frame_time = None
+                while True:
+                    try:
+                        self._visual_blocks.get_nowait()
+                    except Empty:
+                        break
+            elif self._visual_thread is None or not self._visual_thread.is_alive():
+                self._visual_stop.clear()
+                self._visual_thread = Thread(target=self._visual_loop, daemon=True,
+                                             name="record-relay-visualizer")
+                self._visual_thread.start()
+
+    def _visual_loop(self):
+        while not self._visual_stop.is_set():
+            try:
+                block = self._visual_blocks.get(timeout=0.1)
+            except Empty:
+                continue
+            with self.lock:
+                enabled = self.live_view
+                generation = self.visual_generation
+            if not enabled:
+                continue
+            frame_count = len(block) // FRAME_BYTES
+            samples = []
+            for bucket in range(64):
+                first = bucket * frame_count // 64
+                last = max(first + 1, (bucket + 1) * frame_count // 64)
+                peak = 0
+                for left, right in struct.iter_unpack("<hh", block[first * FRAME_BYTES:last * FRAME_BYTES]):
+                    peak = max(peak, abs((left + right) / 2))
+                samples.append(round(peak / 32768, 4))
+            with self.lock:
+                if self.live_view and self.visual_generation == generation:
+                    self.visual_sequence += 1
+                    self.visual_samples = samples
+                    self.visual_frame_time = self.clock()
+
+    def close_live_view(self):
+        self._visual_stop.set()
+        if self._visual_thread is not None:
+            self._visual_thread.join(1)
 
     def set_identify(self, enabled):
         with self.lock:
@@ -73,7 +135,9 @@ class Session:
                 raise ValueError("Enable Identify and Scrobble first")
             self.local_until = self.clock() + 1800 if enabled else None
 
-    def start_recording(self, name, maximum_seconds=1800, *, buffered=False, request_id=None, side=None):
+    def start_recording(self, name, maximum_seconds=1800, *, buffered=False, request_id=None, side=None,
+                        buffered_start_frame=None, expected_capture_generation=None, overlap_ack=False,
+                        side_a_boundary_frame=None):
         if Path(name).name != name or not name.lower().endswith(".wav"):
             raise ValueError("Choose a plain WAV filename")
         if type(maximum_seconds) is not int or not 1 <= maximum_seconds <= 3600:
@@ -88,6 +152,9 @@ class Session:
                 self.turntable_buffer.clear()
                 self.last_signal_at = None
             bounds = self.turntable_buffer.bounds()
+            capture_generation = f"{self.boot_generation}:{bounds['generation']}"
+            if expected_capture_generation is not None and expected_capture_generation != capture_generation:
+                raise ValueError("Capture generation changed; refresh the selected buffer interval.")
             prefix = ()
             selection = None
             overlap_uncertain = False
@@ -102,6 +169,17 @@ class Session:
                         start_frame = max(start_frame, self.last_side_a_end_frame)
                     else:
                         overlap_uncertain = True
+                if buffered_start_frame is not None:
+                    if type(buffered_start_frame) is not int:
+                        raise ValueError("Choose an exact buffered start frame.")
+                    if (side == "B" and self.last_side_a_end_frame is not None
+                            and self.last_side_a_generation == bounds["generation"]
+                            and buffered_start_frame < self.last_side_a_end_frame and not overlap_ack):
+                        raise ValueError("Confirm the intentional overlap with Side A.")
+                    start_frame = buffered_start_frame
+                    if (side == "B" and type(side_a_boundary_frame) is int
+                            and expected_capture_generation == capture_generation):
+                        overlap_uncertain = buffered_start_frame < side_a_boundary_frame
                 if start_frame >= bounds["newest_frame"]:
                     raise ValueError("There is no buffered audio after the last saved Side A boundary.")
                 selection, prefix = self.turntable_buffer.snapshot_selection(
@@ -118,6 +196,8 @@ class Session:
             self.recording_started_at = self.clock()
             self.recording_prefix_frames = self.recording.offered_frames
             self.recording_limit_frames = maximum_seconds * RATE
+            self.recording_start_frame = (selection["start_frame"] if selection
+                                          else bounds["newest_frame"])
             if self.track is not None:
                 frame = max(0, self.recording.offered_frames - self.frames_since_gap) if buffered else 0
                 self.recording.add_match(frame, self.track)
@@ -131,18 +211,21 @@ class Session:
                 raise RuntimeError("The active recording belongs to a different save request")
             side = self.recording_side
             generation = self.recording_generation
+            boundary_frame = None
+            boundary_capture_generation = None
+            if side == "A":
+                bounds = self.turntable_buffer.bounds()
+                if bounds["generation"] == generation:
+                    boundary_frame = bounds["newest_frame"]
+                    boundary_capture_generation = f"{self.boot_generation}:{generation}"
             recorder.closing.set()
         try:
             frames = recorder.stop()
-            if side == "A" and frames:
+            if side == "A" and frames and boundary_frame is not None:
                 with self.lock:
-                    bounds = self.turntable_buffer.bounds()
-                    if bounds["generation"] == generation:
-                        # Use the ring's exact frame edge when Stop was requested.
-                        # The writer drains only blocks already offered before
-                        # closing, which have also reached this ring under lock.
-                        self.last_side_a_end_frame = bounds["newest_frame"]
-                        self.last_side_a_generation = generation
+                    self.last_side_a_end_frame = boundary_frame
+                    self.last_side_a_generation = generation
+                    self.last_side_a_capture_generation = boundary_capture_generation
             return frames
         finally:
             with self.lock:
@@ -155,6 +238,7 @@ class Session:
                     self.recording_started_at = None
                     self.recording_prefix_frames = 0
                     self.recording_limit_frames = 0
+                    self.recording_start_frame = None
 
     def offer(self, block):
         """Observe PCM after playback accepted it. Never perform disk or network I/O here."""
@@ -190,6 +274,19 @@ class Session:
                     self.turntable_buffer.append(block)
             if self.recording is not None:
                 self.recording.offer(block)
+            if self.live_view:
+                try:
+                    self._visual_blocks.put_nowait(block)
+                except Full:
+                    try:
+                        self._visual_blocks.get_nowait()
+                        self.visual_dropped_frames += 1
+                    except Empty:
+                        pass
+                    try:
+                        self._visual_blocks.put_nowait(block)
+                    except Full:
+                        self.visual_dropped_frames += 1
 
     def lookup_if_due(self, recognize, *, clock=None):
         """Run in a worker. The injected recognizer receives a short WAV snapshot."""
@@ -271,11 +368,19 @@ class Session:
                     "buffered_oldest_frame": bounds["oldest_frame"],
                     "buffered_newest_frame": bounds["newest_frame"],
                     "side_a_end_frame": self.last_side_a_end_frame,
+                    "side_a_end_capture_generation": self.last_side_a_capture_generation,
+                    "recording_start_frame": self.recording_start_frame,
                     "late_save_uncertain": projected_late_uncertain,
                     "buffered_seconds": (self.turntable_buffer.size / (RATE * FRAME_BYTES)
                         if self.last_signal_at is not None and now - self.last_signal_at < 600 else 0),
                     "buffer_limit_seconds": 600,
                     "identify": self.identify, "scrobble": self.scrobble,
+                    "live_view": self.live_view,
+                    "visual_sequence": self.visual_sequence,
+                    "visual_dropped_frames": self.visual_dropped_frames,
+                    "visual_age_seconds": (None if self.visual_frame_time is None else
+                                            max(0, now - self.visual_frame_time)),
+                    "visual_samples": self.visual_samples if self.live_view else None,
                     "signal": signal, "recording": state, "track": track,
                     "input_state": input_state,
                     "input_age_seconds": None if input_age is None else round(input_age, 2),
