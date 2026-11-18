@@ -28,6 +28,8 @@ class Session:
         self.track = None
         self.frames_since_gap = 0
         self.quiet_frames = 0
+        self.last_boundary = None
+        self.last_recognition_duration = None
         self.signal = False
         self.last_audio = None
 
@@ -91,8 +93,9 @@ class Session:
                 if self.quiet_frames - frames < boundary:
                     self.recognition_epoch += 1
                     self.track_epoch += 1
+                    self.last_boundary = self.last_audio
                     self.track = None
-                    self.gate.pending = True
+                    self.gate.mark_boundary()
                 self.frames_since_gap = 0
             else:
                 self.frames_since_gap = min(12 * RATE, self.frames_since_gap + frames)
@@ -105,17 +108,28 @@ class Session:
         with self.lock:
             signal = self.signal and self.last_audio is not None and self.clock() - self.last_audio < 1
             if not self.gate.observe(clock(), enabled=self.identify, signal=signal,
-                                     buffered_seconds=self.frames_since_gap / RATE):
+                                     buffered_seconds=self.frames_since_gap / RATE,
+                                     mark_quiet_boundary=False):
                 return False
             epoch = self.recognition_epoch
             frames = self.frames_since_gap
         result = None
+        retry_after = 0
+        started = clock()
         try:
             result = recognize(self.recent.wav_snapshot(frames=frames))
             return bool(result)
+        except Exception as error:
+            if getattr(error, "status", getattr(error, "code", None)) == 429:
+                headers = getattr(error, "headers", None) or {}
+                value = headers.get("Retry-After", "")
+                retry_after = float(value) if value.isascii() and value.isdecimal() and len(value) < 10 else 300
+            raise
         finally:
             with self.lock:
-                self.gate.complete(clock(), matched=bool(result))
+                finished = clock()
+                self.last_recognition_duration = max(0, finished - started)
+                self.gate.complete(finished, matched=bool(result), retry_after=retry_after)
                 if self.identify and self.recognition_epoch == epoch and result:
                     self.track = result
                     self.track_seen = self.clock()
@@ -134,7 +148,12 @@ class Session:
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
             return {"identify": self.identify, "scrobble": self.scrobble,
                     "signal": signal, "recording": state, "track": track,
-                    "track_epoch": self.track_epoch}
+                    "track_epoch": self.track_epoch,
+                    "recognition_timing": {
+                        "seconds_since_boundary": None if self.last_boundary is None else
+                        round(now - self.last_boundary, 2),
+                        "last_lookup_seconds": self.last_recognition_duration,
+                    }}
 
     def run(self, source, playback):
         return relay(source, playback, self.recent, recorder=self)

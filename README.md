@@ -287,3 +287,19 @@ artist, track title, and album inside Music Assistant. The player restored the
 source name between tracks. The report counts only the listening observed
 after recognition, so a short track may finish without qualifying when the
 provider does not return a duration.
+
+### Track-change latency
+
+A quiet gap needs about 0.8 seconds before it is treated as a boundary. The
+next request needs ten seconds of fresh audio, and Shazam has a ten-second
+timeout. The direct publisher normally checks every three seconds and Music
+Assistant's metadata bridge checks every two, so their scheduled contribution
+after a match is up to about five seconds, plus transport and client rendering.
+
+A confirmed boundary can use an expedited lookup after 25 seconds since the
+previous attempt. Periodic gapless checks keep the three-minute cadence. A
+miss still backs off retries for the same track. Provider throttling applies
+across boundaries, and the appliance permits at most 24 recognition attempts
+per rolling hour. The four-minute listening threshold is separate and does not
+delay publishing a recognized title. The timing fields in local control status
+allow future live tests to isolate the capture and provider steps.

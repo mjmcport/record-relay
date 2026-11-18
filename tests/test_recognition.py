@@ -29,3 +29,25 @@ class LookupGateTests(unittest.TestCase):
         gate.complete(312, matched=True)
         self.assertFalse(gate.observe(491, enabled=True, signal=True, buffered_seconds=15))
         self.assertTrue(gate.observe(492, enabled=True, signal=True, buffered_seconds=15))
+
+    def test_confirmed_boundary_gets_faster_attempt_without_overriding_rate_limit(self):
+        gate = LookupGate()
+        self.assertTrue(gate.observe(0, enabled=True, signal=True, buffered_seconds=12))
+        gate.complete(2, matched=False)
+        gate.mark_boundary()
+        self.assertFalse(gate.observe(24, enabled=True, signal=True, buffered_seconds=12))
+        self.assertTrue(gate.observe(25, enabled=True, signal=True, buffered_seconds=12))
+        gate.complete(27, matched=False, retry_after=100)
+        gate.mark_boundary()
+        self.assertFalse(gate.observe(126, enabled=True, signal=True, buffered_seconds=12))
+        self.assertTrue(gate.observe(127, enabled=True, signal=True, buffered_seconds=12))
+
+    def test_hourly_limit_applies_even_to_repeated_boundaries(self):
+        gate = LookupGate(hourly_limit=2)
+        for now in (0, 25):
+            gate.mark_boundary()
+            self.assertTrue(gate.observe(now, enabled=True, signal=True, buffered_seconds=12))
+            gate.complete(now + 1, matched=True)
+        gate.mark_boundary()
+        self.assertFalse(gate.observe(3599, enabled=True, signal=True, buffered_seconds=12))
+        self.assertTrue(gate.observe(3600, enabled=True, signal=True, buffered_seconds=12))
