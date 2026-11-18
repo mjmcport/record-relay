@@ -314,3 +314,20 @@ even a complete short vinyl track will not qualify through that adapter yet.
 The next integration needs duration for the exact recognized recording or
 release version. A title-only catalog match is insufficient.
 [ListenBrainz submission rules](https://listenbrainz.readthedocs.io/en/latest/users/api/core.html#post--1-submit-listens)
+
+### Suggest splits without changing the mastered side
+
+Run `python3 waveform.py SIDE.wav --suggest-starts > waveform.json`. Choose
+the WAV and that JSON in **Review track splits**, then select **Use suggested
+starts**. The editor adds quiet-gap candidates to the editable list. Listen
+around them and remove or move any false suggestions before downloading the
+split plan. Quiet passages may look like breaks, and gapless transitions may
+have no quiet gap to detect. Suggestion, review, and split-plan export leave
+the original WAV untouched.
+
+Music Assistant's own ListenBrainz provider and Record Relay can coexist.
+The native Music Assistant 2.10.12 provider accepts library-track playback
+events. It ignores live audio-source events, including the Turntable source.
+Updating the Turntable's display metadata does not change its media type or
+emit a library-track playback event. Record Relay remains responsible for
+eligible Turntable listens.

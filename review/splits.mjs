@@ -7,6 +7,12 @@ export function validateWaveform(data) {
         pair.every(peak => Number.isInteger(peak) && peak >= 0 && peak <= 32768))) {
     throw new Error("Choose valid stereo waveform JSON from Record Relay.");
   }
+  if (data.suggested_starts !== undefined && (!Array.isArray(data.suggested_starts) ||
+      data.suggested_starts.length > 10000 || data.suggested_starts.some((frame, index, starts) =>
+        !Number.isSafeInteger(frame) || frame < 0 || frame >= data.frames ||
+        (index > 0 && frame <= starts[index - 1])))) {
+    throw new Error("Suggested starts must be ordered and within the recording.");
+  }
   return data;
 }
 

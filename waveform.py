@@ -4,8 +4,10 @@ import json
 import struct
 import wave
 
+from relay import find_transitions
 
-def waveform_peaks(reader, columns):
+
+def waveform_peaks(reader, columns, *, suggest=False):
     if not 1 <= columns <= 10000:
         raise ValueError("Choose between 1 and 10,000 columns")
     if reader.getnchannels() != 2 or reader.getsampwidth() != 2:
@@ -28,13 +30,23 @@ def waveform_peaks(reader, columns):
                 right = max(right, abs(r_sample))
             remaining -= count
         peaks.append([left, right])
-    return {"sample_rate": reader.getframerate(), "frames": total, "peaks": peaks}
+    rate = reader.getframerate()
+    result = {"sample_rate": rate, "frames": total, "peaks": peaks}
+    if suggest:
+        reader.rewind()
+        result["suggested_starts"] = [
+            frame for seconds in find_transitions(reader)
+            if (frame := round(seconds * rate)) < total
+        ]
+    return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording")
     parser.add_argument("--columns", type=int, default=1000)
+    parser.add_argument("--suggest-starts", action="store_true",
+                        help="Include tentative track starts detected from quiet gaps")
     args = parser.parse_args()
     with wave.open(args.recording, "rb") as recording:
-        print(json.dumps(waveform_peaks(recording, args.columns)))
+        print(json.dumps(waveform_peaks(recording, args.columns, suggest=args.suggest_starts)))

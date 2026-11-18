@@ -19,6 +19,7 @@ function ready() {
 function render() {
   const usable = ready();
   el("position").disabled = el("add").disabled = !usable;
+  el("suggest").disabled = !usable || !waveform?.suggested_starts?.length;
   el("save").disabled = !usable || points.length === 0;
   if (master && waveform && !usable && Number.isFinite(player.duration)) {
     el("status").textContent = "The recording length differs from the waveform. Check the files.";
@@ -92,6 +93,13 @@ el("waveform").onchange = async event => {
     el("status").textContent = error.message;
   }
   render();
+};
+el("suggest").onclick = () => {
+  if (!ready()) return;
+  points = [...new Set([...points, ...(waveform.suggested_starts || [])])].sort((a, b) => a - b);
+  editing = undefined;
+  render();
+  el("status").textContent = "Suggested starts added. Listen around each one before exporting.";
 };
 el("position").onclick = () => { el("seconds").value = player.currentTime; };
 el("add").onclick = () => {

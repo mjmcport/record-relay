@@ -18,3 +18,10 @@ test("rejects out-of-range and non-integer positions", () => {
 test("rejects malformed stereo peaks", () => {
   assert.throws(() => validateWaveform({...waveform, peaks: [[32769, 0]]}));
 });
+
+test("accepts optional ordered suggestions and rejects invalid frames", () => {
+  assert.deepEqual(validateWaveform({...waveform, suggested_starts: [0, 6]}).suggested_starts, [0, 6]);
+  for (const starts of [[6, 0], [6, 6], [10], [-1], [2.5]]) {
+    assert.throws(() => validateWaveform({...waveform, suggested_starts: starts}));
+  }
+});
