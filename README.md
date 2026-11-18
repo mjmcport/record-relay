@@ -374,12 +374,20 @@ local PNG or JPEG as the side’s cover. Export each reviewed track as tagged
 FLAC. FFmpeg must be installed where the panel runs. Match notes and generated
 exports are separate from the lossless side master.
 
-To opt in to passwordless LAN serving, start the panel with `--listen` set to
-the appliance's specific private IPv4 address and `--allow-network` set to
-its private subnet. Normal defaults are loopback-only. The LAN panel trusts
-devices on the configured subnet, so use it on a household network without
-public port forwarding. Browser writes require the panel origin and a fresh
-control token.
+To opt in to LAN serving, start the panel with `--listen` set to the
+appliance's specific private IPv4 address and `--allow-network` set to its
+private subnet. Normal defaults are loopback-only. **This LAN mode has no
+user authentication and no TLS.** Every device in the configured subnet is
+treated as a full operator: a client can obtain the per-process control token
+from the panel page, start or stop recordings, change catalog and optional
+service settings, and download saved WAVs. The origin check and token defend
+against some cross-site requests; they do not identify or authorize users, and
+HTTP does not protect the token or recordings from other network observers.
+Use LAN mode only on a private network where every connected device and user
+is trusted with those capabilities. Do not use it on guest/shared networks or
+with public port forwarding. For access from a less-trusted network, keep the
+panel loopback-only and use the documented SSH tunnel. Do not describe LAN
+mode as secured or authenticated.
 
 When a confirmed gap's first lookup returns no match, Record Relay can retry
 once after 20 seconds of additional audio. That retry uses the same per-minute
