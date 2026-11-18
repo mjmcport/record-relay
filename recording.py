@@ -8,7 +8,7 @@ import wave
 from capture import FRAME_BYTES, RATE, BLOCK_BYTES
 
 
-def record_side(source, destination, maximum_seconds, *, enabled=False):
+def record_side(source, destination, maximum_seconds, *, enabled=False, before_publish=None):
     if not enabled:
         raise ValueError("Recording must be explicitly enabled")
     if destination.suffix.lower() != ".wav" or not 1 <= maximum_seconds <= 3600:
@@ -29,6 +29,8 @@ def record_side(source, destination, maximum_seconds, *, enabled=False):
                 count += len(block)
         if not count or count % FRAME_BYTES:
             raise ValueError("Recording is empty or ends in a partial stereo frame")
+        if before_publish is not None:
+            before_publish()
         destination.hardlink_to(candidate)
     return count // FRAME_BYTES
 

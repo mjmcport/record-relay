@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import wave
 
 
-def export_track(source, output, start, end, tags):
+def export_track(source, output, start, end, tags, *, cover=None):
     if output.suffix.lower() != ".flac":
         raise ValueError("Output path must end in .flac")
     if output.exists() or output.is_symlink():
@@ -31,7 +31,17 @@ def export_track(source, output, start, end, tags):
                         raise ValueError("Truncated recording")
                     writer.writeframesraw(frames)
                     remaining -= len(frames) // 4
-            command = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(pcm), "-c:a", "flac"]
+            command = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(pcm)]
+            if cover is not None:
+                if cover.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                    raise ValueError("Choose a local PNG or JPEG cover")
+                if cover.stat().st_size > 10_000_000:
+                    raise ValueError("Cover file exceeds 10 MB")
+                image_format = "png_pipe" if cover.suffix.lower() == ".png" else "jpeg_pipe"
+                command.extend(["-f", image_format, "-i", str(cover), "-map", "0:a", "-map", "1:v:0",
+                                "-c:v", "copy", "-disposition:v:0", "attached_pic",
+                                "-metadata:s:v:0", "comment=Cover (front)"])
+            command.extend(["-c:a", "flac"])
             for key, value in tags.items():
                 if value:
                     command.extend(["-metadata", f"{key}={value}"])
@@ -48,9 +58,10 @@ def main():
     parser.add_argument("--end", type=int, required=True, help="Ending sample frame, exclusive")
     for field in ("title", "artist", "album", "track"):
         parser.add_argument(f"--{field}")
+    parser.add_argument("--cover", type=Path, help="Reviewed local PNG or JPEG cover")
     args = parser.parse_args()
     tags = {field: getattr(args, field) for field in ("title", "artist", "album", "track")}
-    export_track(args.source, args.output, args.start, args.end, tags)
+    export_track(args.source, args.output, args.start, args.end, tags, cover=args.cover)
 
 
 if __name__ == "__main__":

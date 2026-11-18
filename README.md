@@ -114,3 +114,15 @@ The review workflow passed an isolated Chrome test at 390 and 1280 pixels wide u
 - `providers.cover_candidates` accepts a chosen MusicBrainz release ID and lists approved front artwork from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API). Release search, previews, and embedding are separate steps still to be integrated.
 
 The recording CLI is an independent consumer primitive. Before connecting it to live playback, put it behind a bounded queue and test that disk or recorder failures stop only the recording. Leave capture and playback on the original service until the combined generated-audio route passes.
+
+### Record alongside a PCM relay
+
+Add `--record-side side-a.wav --record-limit 1800` to `capture.py` to explicitly start a side recording from the relayed audio. The writer has a queue of 30 blocks (up to about three seconds at the default read size). If it falls behind, the recording fails and no partial master is published. The playback process can continue to write its PCM output. Recorder errors appear on stderr. Start and stop within a persistent capture session still need a control interface.
+
+Add `--cover selected.jpg` (or a local PNG) to `export_track.py` to embed reviewed front artwork. Cover Art Archive lookup only lists candidates. The user chooses the correct release and supplies the local image. The exporter does not fetch images or change the side master.
+
+### Recognition provider choices
+
+The audio buffer and lookup policy are provider-independent. The earlier Shazam prototype remains a reference. Apple's supported [ShazamKit](https://developer.apple.com/shazamkit/) lists macOS and Android among its platforms but does not list Raspberry Pi Linux. An official Shazam route could use a separately authorized Mac companion, subject to Apple's entitlement requirements and end-to-end testing. This repository does not depend on an unofficial Shazam endpoint.
+
+[AudD](https://audd.io/pricing/) is the headless-compatible HTTP alternative. It needs an API token and sends a short audio excerpt when enabled. Its published entry tier is \$5/month for 1,000 requests, and a 300-request trial is listed where available. No account or subscription has been created. Set a provider-side hard cap if piloting it. The repository currently tests simulated calls only.

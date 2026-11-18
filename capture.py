@@ -52,7 +52,7 @@ class RecentAudio:
         return result.getvalue()
 
 
-def relay(source, playback, recent):
+def relay(source, playback, recent, *, recorder=None):
     """Pass complete frames through unchanged. Only the playback sink paces input."""
     pending = b""
     frames = 0
@@ -70,6 +70,8 @@ def relay(source, playback, recent):
             remaining = remaining[sent:]
         playback.flush()
         recent.append(audio)
+        if recorder is not None:
+            recorder.offer(audio)
         frames += usable // FRAME_BYTES
     if pending:
         raise ValueError("Input ended with an incomplete stereo frame")
@@ -80,9 +82,27 @@ def main():
     parser = argparse.ArgumentParser(description="Relay 48 kHz signed 16-bit stereo PCM.")
     parser.add_argument("--snapshot", type=Path,
                         help="Explicitly save the last 15 seconds as WAV after EOF; must not exist")
+    parser.add_argument("--record-side", type=Path,
+                        help="Opt in to writing a WAV side master")
+    parser.add_argument("--record-limit", type=int, default=1800,
+                        help="Maximum seconds to record")
     args = parser.parse_args()
+    if args.record_side and not 1 <= args.record_limit <= 3600:
+        parser.error("--record-limit must be 1–3600 seconds")
+    recorder = None
+    if args.record_side:
+        from fanout import BackgroundRecording
+        recorder = BackgroundRecording(args.record_side, args.record_limit)
     recent = RecentAudio()
-    frames = relay(sys.stdin.buffer, sys.stdout.buffer, recent)
+    try:
+        frames = relay(sys.stdin.buffer, sys.stdout.buffer, recent, recorder=recorder)
+    finally:
+        if recorder:
+            try:
+                recorded = recorder.stop()
+                print(f"Recorded {recorded} frames.", file=sys.stderr)
+            except (OSError, ValueError) as error:
+                print(f"Recording failed: {error}", file=sys.stderr)
     if args.snapshot:
         with args.snapshot.open("xb") as output:
             output.write(recent.wav_snapshot())
