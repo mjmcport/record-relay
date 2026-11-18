@@ -92,3 +92,12 @@ Feed generated stereo PCM into the private PulseAudio monitor, then play that so
 ### Generate a waveform for track review
 
 Run `python3 waveform.py side-a.wav --columns 1000` to produce compact JSON with independent peaks for the two channels. The reader processes the side in small chunks. Each peak column spans a known range of sample frames, so a future editor can map a click to a split location. This step makes no changes to the master and needs no network access.
+
+### Review splits in a browser
+
+1. Generate waveform JSON with `python3 waveform.py side-a.wav > side-a.json`.
+2. Run `python3 -m http.server 8765 --bind 127.0.0.1` from this repository and open `http://127.0.0.1:8765/review/`.
+3. Select your WAV and its matching JSON. Listen or type a time in seconds, save each track start, and adjust or remove it as needed. Add a start at zero if you want the lead-in included.
+4. Download the split plan. Its start and end values are sample frames ready for the FLAC export command. Files stay local to the browser. Matching duration is a sanity check, so select the JSON generated from the actual WAV.
+
+Run `node --test tests/review.test.mjs` for the split-plan tests. The review tool is local-only and has no live capture or Music Assistant controls.

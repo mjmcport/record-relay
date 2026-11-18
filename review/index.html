@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record Relay · Side review</title>
+<style>
+body{margin:0;background:#161824;color:#f7f2e8;font:1rem system-ui;line-height:1.6}
+main{max-width:900px;margin:auto;padding:clamp(1rem,5vw,4rem)}
+h1{font:clamp(2.5rem,8vw,5rem) Georgia;margin:.25em 0}
+section{background:#242737;border-radius:16px;padding:1.25rem;margin:1.25rem 0}
+label{display:block;margin:.75rem 0}
+input,button{font:inherit;max-width:100%}
+button{background:#f3bd81;color:#22212c;border:0;border-radius:8px;padding:.45em .8em;margin:.2em;cursor:pointer}
+button:disabled{opacity:.65;cursor:default}
+audio,canvas{width:100%}
+canvas{display:block;background:#10121c;border-radius:8px}
+:focus-visible{outline:3px solid #84dfd2;outline-offset:3px}
+li{margin:.4rem 0}
+</style>
+<main>
+<h1>Review a record side</h1>
+<p>Listen to your side master, then mark the starts of the tracks you want to export.</p>
+<section aria-label="Recording and waveform">
+<label>Side master <input id="recording" type="file" accept=".wav,audio/wav"></label>
+<label>Waveform JSON <input id="waveform" type="file" accept=".json,application/json"></label>
+<audio id="player" controls preload="metadata" aria-label="Side master playback"></audio>
+<canvas id="peaks" width="1000" height="180" aria-label="Stereo peak overview"></canvas>
+<p id="status" role="status">Choose the recording and its waveform JSON to begin.</p>
+</section>
+<section aria-labelledby="splits-label">
+<h2 id="splits-label">Track starts</h2>
+<label>Time in seconds <input id="seconds" type="number" min="0" step="any" value="0"></label>
+<button id="position" disabled>Use playback position</button>
+<button id="add" disabled>Save track start</button>
+<button id="save" disabled>Download split plan</button>
+<ol id="splits"></ol>
+</section>
+</main>
+<script type="module" src="review.mjs"></script>
+</html>
