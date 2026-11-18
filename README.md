@@ -194,3 +194,42 @@ A silent real-Pi pilot verified a short WAV from the Behringer input and a separ
 After a sustained quiet gap, the panel clears the previous match and waits for at least ten seconds of fresh audio before looking up the next track. Brief dips in level preserve the previous match. A minute between attempts, a longer delay after misses, and a three-minute periodic check for gapless material limit fingerprint requests. The periodic check can take up to three minutes to notice a gapless transition. Recognition runs outside the PCM and recording paths.
 
 The release tests exercise a quiet gap, a short dropout, a no-match retry, and a gapless change with simulated provider responses. The Pi pilot verified a single live fingerprint lookup. Keep Identify off to prevent additional requests when testing recording or reviewing WAVs.
+
+### Pilot native Music Assistant metadata
+
+The optional bridge is under `integrations/`. Prepare an overlay by running
+`python3 integrations/patch_ma_provider.py PATH_TO_SENDSPIN_PROVIDER.py NEW_OVERLAY_DIRECTORY`.
+The command checks the exact reviewed 2.10.12 provider hash before generating
+anything. The overlay stays inactive unless all three values are configured
+in the Music Assistant process environment.
+
+- `RECORD_RELAY_PLAYER_ID` is the one player rendering the intended source.
+- `RECORD_RELAY_SOURCE_ID` is the provider's Sendspin source item identifier,
+  rather than its display name or full URI.
+- `RECORD_RELAY_METADATA_FILE` is the path inside Music Assistant to the read-only
+  snapshot directory's JSON file. Mount the directory for atomic replacements.
+
+Run `python3 integrations/project_metadata.py SNAPSHOT_FILE STATUS_COMMAND ...`
+with an operator-approved private status command. The command must output
+Record Relay control status JSON. A private SSH route can run the existing
+`session_cli.py control SOCKET '{"action":"status"}'` command on the Pi as the
+capture service account. The snapshot contains title, artist, album, and a
+timestamp. Give only the projector and Music Assistant access to its directory,
+and make the file readable by the Music Assistant runtime UID. The bridge ignores
+stale snapshots and other playback sessions. Test with a silent sink in an
+isolated server before mounting the overlay on a household instance. For
+rollback, remove the two overlay mounts and three environment settings, then
+recreate Music Assistant with its original image and configuration.
+
+### Prepare a ListenBrainz credential
+
+Get the user token from the [ListenBrainz profile](https://listenbrainz.org/profile/).
+Run `python3 integrations/setup_scrobble.py OUTPUT_JSON MA_TOKEN_FILE MA_URL PLAYER_ID SOURCE_URI`
+in a private Terminal. The tool reads the existing private Music Assistant token
+file and prompts for the ListenBrainz token with input hidden. It creates the
+configuration with mode 0600. Keep it out of chat, shell history, and Git.
+Give the service account ownership of the private file and directory, and pass
+it to `--scrobble-config`. The panel starts with Scrobble off. For a live test,
+select the intended playback target and use a genuinely eligible listening
+session. To disconnect, turn Scrobble off, disable the configuration in the
+service, and rotate or revoke the token through ListenBrainz if needed.
