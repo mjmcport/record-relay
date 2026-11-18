@@ -18,6 +18,7 @@ label{display:block;margin:.6rem 0}
 <section aria-labelledby="identify-heading">
 <h2 id="identify-heading">Track identification</h2>
 <label><input type="checkbox" id="identify"> Identify tracks</label>
+<label><input type="checkbox" id="scrobble"> Scrobble verified listening</label>
 <p id="track">Waiting for session status.</p>
 </section>
 <section aria-labelledby="record-heading">
@@ -55,17 +56,20 @@ async function update(data) {
     }
     const state = await request({action:"status"});
     el("identify").checked = state.identify;
+    el("scrobble").checked = state.scrobble;
     el("track").textContent = state.track ? [state.track.artist,state.track.title].filter(Boolean).join(" — ") : "No track identified.";
     el("recording").textContent = "Recording: " + state.recording;
+    if (state.scrobble_error) el("message").textContent = "Playback verification or scrobble failed.";
     if (state.recognition_error) el("message").textContent = "Recognition request failed.";
   } catch (error) {
     el("message").textContent = error.message;
-    if (data.action === "identify") el("identify").checked = !data.enabled;
+    if (["identify","scrobble"].includes(data.action)) el(data.action).checked = !data.enabled;
   } finally {
     pending = false;
   }
 }
 el("identify").onchange = event => update({action:"identify",enabled:event.target.checked});
+el("scrobble").onchange = event => update({action:"scrobble",enabled:event.target.checked});
 document.querySelector("form").onsubmit = event => {
   event.preventDefault();
   update({action:"record",name:el("name").value,limit:el("limit").valueAsNumber*60});

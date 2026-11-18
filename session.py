@@ -19,6 +19,8 @@ class Session:
         self.lock = Lock()
         self.recording = None
         self.identify = False
+        self.scrobble = False
+        self.track_seen = None
         self.recognition_epoch = 0
         self.gate = LookupGate()
         self.track = None
@@ -31,7 +33,15 @@ class Session:
             self.identify = bool(enabled)
             self.recognition_epoch += 1
             self.track = None
+            if not self.identify:
+                self.scrobble = False
             self.gate.observe(monotonic(), enabled=False, signal=False, buffered_seconds=0)
+
+    def set_scrobble(self, enabled):
+        with self.lock:
+            if enabled and not self.identify:
+                raise ValueError("Enable Identify before enabling Scrobble")
+            self.scrobble = enabled
 
     def start_recording(self, name, maximum_seconds=1800):
         if Path(name).name != name or not name.lower().endswith(".wav"):
@@ -89,6 +99,7 @@ class Session:
                 self.gate.complete(clock(), matched=bool(result))
                 if self.identify and self.recognition_epoch == epoch and result:
                     self.track = result
+                    self.track_seen = monotonic()
 
     def status(self):
         with self.lock:
@@ -99,8 +110,11 @@ class Session:
                 state = "failed" if recording.error else "finished"
             else:
                 state = "recording"
-            return {"identify": self.identify, "signal": self.signal,
-                    "recording": state, "track": self.track}
+            now = monotonic()
+            signal = self.signal and self.last_audio is not None and now - self.last_audio < 1
+            track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
+            return {"identify": self.identify, "scrobble": self.scrobble,
+                    "signal": signal, "recording": state, "track": track}
 
     def run(self, source, playback):
         return relay(source, playback, self.recent, recorder=self)

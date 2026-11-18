@@ -1,9 +1,17 @@
 """Opt-in network adapters. Importing this module never makes a request."""
 import io
 import json
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from uuid import UUID, uuid4
 import wave
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+authenticated_open = build_opener(NoRedirect()).open
 
 
 def request_json(request, transport):
@@ -11,7 +19,7 @@ def request_json(request, transport):
         return json.loads(response.read(256_000))
 
 
-def recognize_audd(sample, token, *, enabled=False, transport=urlopen):
+def recognize_audd(sample, token, *, enabled=False, transport=authenticated_open):
     """Send at most 12 seconds of native PCM to AudD when explicitly enabled."""
     if not enabled:
         return None
@@ -38,7 +46,7 @@ def recognize_audd(sample, token, *, enabled=False, transport=urlopen):
     return response.get("result")
 
 
-def send_listen(play, *, artist, title, album=None, token, enabled=False, transport=urlopen):
+def send_listen(play, *, artist, title, album=None, token, enabled=False, transport=authenticated_open):
     """Submit only through the caller's eligibility and receipt workflow."""
     if not play.eligible(enabled=enabled):
         return False

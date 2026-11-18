@@ -50,9 +50,13 @@ with TemporaryDirectory() as folder:
                         page.get_by_text("Saved 4800 frames.").wait_for()
                         with wave.open(str(root / "side-a.wav"), "rb") as audio:
                             assert audio.readframes(4800) == b"abcd" * 4800
-                        page.get_by_role("checkbox").check()
+                        page.get_by_role("checkbox", name="Identify tracks").check()
                         page.get_by_text("Start the session with a configured recognition provider").wait_for()
-                        assert not page.get_by_role("checkbox").is_checked()
+                        assert not page.get_by_role("checkbox", name="Identify tracks").is_checked()
+                        scrobble = page.get_by_role("checkbox", name="Scrobble verified listening")
+                        scrobble.check()
+                        page.get_by_text("Configure Music Assistant and ListenBrainz first").wait_for()
+                        assert not scrobble.is_checked()
                         browser.close()
                 finally:
                     panel.terminate()
