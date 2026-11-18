@@ -24,6 +24,7 @@ class Session:
         self.track = None
         self.seconds = 0
         self.signal = False
+        self.last_audio = None
 
     def set_identify(self, enabled):
         with self.lock:
@@ -66,6 +67,7 @@ class Session:
         rms = math.sqrt(energy / (len(block) // 2))
         with self.lock:
             self.seconds = min(12, self.seconds + len(block) / (FRAME_BYTES * RATE))
+            self.last_audio = monotonic()
             self.signal = rms >= 32768 * 10 ** (-45 / 20)
             if self.recording is not None:
                 self.recording.offer(block)
@@ -73,7 +75,8 @@ class Session:
     def lookup_if_due(self, recognize, *, clock=monotonic):
         """Run in a worker. The injected recognizer receives a short WAV snapshot."""
         with self.lock:
-            if not self.gate.observe(clock(), enabled=self.identify, signal=self.signal,
+            signal = self.signal and self.last_audio is not None and monotonic() - self.last_audio < 1
+            if not self.gate.observe(clock(), enabled=self.identify, signal=signal,
                                      buffered_seconds=self.seconds):
                 return False
             epoch = self.recognition_epoch

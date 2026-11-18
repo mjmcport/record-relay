@@ -138,4 +138,14 @@ Create a private runtime directory (mode 0700) and a recording folder, then run 
 | `{"action":"stop"}` | Finalizes the side, reporting captured frames |
 | `{"action":"identify","enabled":true}` | Arms the recognition gate in this session |
 
-The socket has no network listener. A bare CLI session has no recognizer worker or provider credential. An embedding process can schedule `Session.lookup_if_due` outside the playback thread and supply a bounded recognizer. A late match is discarded if Identify was turned off during the request. Stop the recording and inspect its result before offloading it. Integrated synthetic tests cover continuity, recording controls and recognition state. The physical input service is still controlled by the original Sendspin process.
+The socket has no network listener. A CLI session without a configured provider stays offline and rejects Identify. An embedding process can schedule `Session.lookup_if_due` outside the playback thread and supply a bounded recognizer. A late match is discarded if Identify was turned off during the request. Stop the recording and inspect its result before offloading it. Integrated synthetic tests cover continuity, recording controls and recognition state. The physical input service is still controlled by the original Sendspin process.
+
+### Open the pilot control panel
+
+With the private PCM session running, use `python3 panel.py /path/to/private/control.sock` and open `http://127.0.0.1:8766/`. Run the panel on the same machine as the socket. For a Pi, forward that loopback port over SSH. The panel assumes a trusted local OS account and uses loopback, exact origin checks and a per-process control token. Keep it off publicly accessible interfaces.
+
+Recording controls work without a provider. For authorized AudD testing, supply `--audd-token-file` to the session using an owner-only file outside the repository. Identification starts disabled. Enable it in the panel to run lookups in a worker outside the PCM path. Turning it off stops future lookups, although a request already sent cannot be withdrawn. The panel reports the last recognized artist and title.
+
+`worker.ScrobbleDelivery` combines verified playback observations, the eligibility policy, and the ListenBrainz sender. Its caller must establish track identity and actual audible playback. The panel does not enable scrobbling. Tests use simulated playback observations and a fake sender. The live Music Assistant playback observer and standalone silent-listener controls remain to be wired.
+
+For the browser smoke test, install Playwright for Python and Chromium, then run `python3 tests/browser/test_panel.py`. Set `CHROME_PATH` to use an existing Chrome binary. The test starts disposable local processes, passes generated PCM and verifies the output WAV and rejected control requests.

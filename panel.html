@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record Relay</title>
+<style>
+body{margin:0;background:#161824;color:#f7f2e8;font:1rem system-ui;line-height:1.6}
+main{max-width:42rem;margin:auto;padding:clamp(1rem,5vw,4rem)}
+h1{font:clamp(2.5rem,8vw,5rem) Georgia}
+section{background:#242737;border-radius:16px;padding:1.25rem;margin:1rem 0}
+button,input{font:inherit;max-width:100%}
+button{background:#f3bd81;color:#22212c;border:0;border-radius:8px;padding:.45em .8em}
+label{display:block;margin:.6rem 0}
+:focus-visible{outline:3px solid #84dfd2;outline-offset:3px}
+</style>
+<main>
+<h1>Record Relay</h1>
+<section aria-labelledby="identify-heading">
+<h2 id="identify-heading">Track identification</h2>
+<label><input type="checkbox" id="identify"> Identify tracks</label>
+<p id="track">Waiting for session status.</p>
+</section>
+<section aria-labelledby="record-heading">
+<h2 id="record-heading">Record a side</h2>
+<form>
+<label>Filename <input id="name" value="side-a.wav" required></label>
+<label>Maximum minutes <input id="limit" value="30" type="number" min="1" max="60" required></label>
+<button>Start recording</button>
+<button type="button" id="stop">Stop recording</button>
+</form>
+<p id="recording"></p>
+</section>
+<p id="message" role="status"></p>
+</main>
+<script>
+const el = id => document.getElementById(id);
+let pending = false;
+async function request(data) {
+  const response = await fetch("/control", {
+    method:"POST", headers:{"Content-Type":"application/json","X-Control-Token":"__CONTROL_TOKEN__"},
+    body:JSON.stringify(data)
+  });
+  const result = await response.json();
+  if (result.error) throw new Error(result.error);
+  return result;
+}
+async function update(data) {
+  if (pending) return;
+  pending = true;
+  try {
+    if (data.action !== "status") {
+      const result = await request(data);
+      el("message").textContent = result.recorded_frames === undefined ? "" :
+        "Saved " + result.recorded_frames + " frames.";
+    }
+    const state = await request({action:"status"});
+    el("identify").checked = state.identify;
+    el("track").textContent = state.track ? [state.track.artist,state.track.title].filter(Boolean).join(" — ") : "No track identified.";
+    el("recording").textContent = "Recording: " + state.recording;
+    if (state.recognition_error) el("message").textContent = "Recognition request failed.";
+  } catch (error) {
+    el("message").textContent = error.message;
+    if (data.action === "identify") el("identify").checked = !data.enabled;
+  } finally {
+    pending = false;
+  }
+}
+el("identify").onchange = event => update({action:"identify",enabled:event.target.checked});
+document.querySelector("form").onsubmit = event => {
+  event.preventDefault();
+  update({action:"record",name:el("name").value,limit:el("limit").valueAsNumber*60});
+};
+el("stop").onclick = () => update({action:"stop"});
+update({action:"status"});
+setInterval(() => update({action:"status"}), 3000);
+</script>
+</html>
