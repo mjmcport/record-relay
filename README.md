@@ -233,3 +233,9 @@ it to `--scrobble-config`. The panel starts with Scrobble off. For a live test,
 select the intended playback target and use a genuinely eligible listening
 session. To disconnect, turn Scrobble off, disable the configuration in the
 service, and rotate or revoke the token through ListenBrainz if needed.
+
+The overlay was rehearsed in the official 2.10.12 container with networking
+disabled. Mount `integrations/rehearse_ma_image.py` as the test entry script
+alongside the two overlay modules. It uses the actual player controller
+metadata method and a synthetic session to prove that a new title appears and
+that clearing the snapshot restores the source name.
