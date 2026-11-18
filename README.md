@@ -268,3 +268,16 @@ commands cannot pass, and endpoints receive only the configured data. A real
 Pi-to-SER6 pilot verified metadata snapshot refresh and authenticated
 read-only playback observation after the Mac's temporary tunnels were removed.
 The pilot left Identify and Scrobble off and did not start physical playback.
+
+A real Pi reboot restored Sendspin pairing, the capture graph, the control
+panel, and direct metadata publishing without a login or the Mac tunnels.
+The read-only playback observer authenticated through the direct gateway
+after reboot. A gateway-only restart on the server also recovered automatically
+without restarting Music Assistant.
+
+For a live scrobble rehearsal, choose a playback target someone will actually
+listen to. Headphones are suitable when connected to the configured Music
+Assistant player. A null output can verify transport or metadata without
+generating an eligible listen. With unknown track length, allow at least four
+minutes of verified listening after the match lands and check ListenBrainz
+for one matching entry.
