@@ -296,11 +296,13 @@ timeout. The direct publisher normally checks every three seconds and Music
 Assistant's metadata bridge checks every two, so their scheduled contribution
 after a match is up to about five seconds, plus transport and client rendering.
 
-A confirmed boundary can use an expedited lookup after 25 seconds since the
-previous attempt. Periodic gapless checks keep the three-minute cadence. A
-miss still backs off retries for the same track. Provider throttling applies
-across boundaries, and the appliance permits at most 24 recognition attempts
-per rolling hour. The four-minute listening threshold is separate and does not
+A confirmed boundary queues a request as soon as ten seconds of fresh audio
+are available. There is no fixed cooldown between normal confirmed boundaries.
+The worker allows at most two boundary-triggered lookups per rolling minute
+and 24 total attempts per rolling hour. These limits prevent repeated false
+gaps from driving a burst of requests. Periodic gapless checks keep the
+three-minute cadence. A miss still backs off retries for the same track,
+and provider throttling applies across boundaries. The four-minute listening threshold is separate and does not
 delay publishing a recognized title. The timing fields in local control status
 allow future live tests to isolate the capture and provider steps.
 

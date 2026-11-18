@@ -17,8 +17,8 @@ class LookupGateTests(unittest.TestCase):
         self.assertTrue(gate.observe(10, enabled=True, signal=True, buffered_seconds=15))
         gate.complete(11, matched=True)
         self.assertFalse(gate.observe(30, enabled=True, signal=False, buffered_seconds=15))
-        self.assertFalse(gate.observe(31, enabled=True, signal=True, buffered_seconds=15))
-        self.assertTrue(gate.observe(70, enabled=True, signal=True, buffered_seconds=15))
+        self.assertFalse(gate.observe(31, enabled=True, signal=True, buffered_seconds=1))
+        self.assertTrue(gate.observe(40, enabled=True, signal=True, buffered_seconds=10))
 
     def test_retry_after_and_gapless_periodic_check(self):
         gate = LookupGate()
@@ -35,12 +35,12 @@ class LookupGateTests(unittest.TestCase):
         self.assertTrue(gate.observe(0, enabled=True, signal=True, buffered_seconds=12))
         gate.complete(2, matched=False)
         gate.mark_boundary()
-        self.assertFalse(gate.observe(24, enabled=True, signal=True, buffered_seconds=12))
-        self.assertTrue(gate.observe(25, enabled=True, signal=True, buffered_seconds=12))
-        gate.complete(27, matched=False, retry_after=100)
+        self.assertFalse(gate.observe(14, enabled=True, signal=True, buffered_seconds=9))
+        self.assertTrue(gate.observe(15, enabled=True, signal=True, buffered_seconds=10))
+        gate.complete(17, matched=False, retry_after=100)
         gate.mark_boundary()
-        self.assertFalse(gate.observe(126, enabled=True, signal=True, buffered_seconds=12))
-        self.assertTrue(gate.observe(127, enabled=True, signal=True, buffered_seconds=12))
+        self.assertFalse(gate.observe(116, enabled=True, signal=True, buffered_seconds=12))
+        self.assertTrue(gate.observe(117, enabled=True, signal=True, buffered_seconds=12))
 
     def test_hourly_limit_applies_even_to_repeated_boundaries(self):
         gate = LookupGate(hourly_limit=2)
@@ -51,3 +51,13 @@ class LookupGateTests(unittest.TestCase):
         gate.mark_boundary()
         self.assertFalse(gate.observe(3599, enabled=True, signal=True, buffered_seconds=12))
         self.assertTrue(gate.observe(3600, enabled=True, signal=True, buffered_seconds=12))
+
+    def test_rapid_false_gaps_hit_the_boundary_burst_limit(self):
+        gate = LookupGate()
+        for now in (11, 23):
+            gate.mark_boundary()
+            self.assertTrue(gate.observe(now, enabled=True, signal=True, buffered_seconds=10))
+            gate.complete(now + 1, matched=True)
+        gate.mark_boundary()
+        self.assertFalse(gate.observe(35, enabled=True, signal=True, buffered_seconds=12))
+        self.assertTrue(gate.observe(71, enabled=True, signal=True, buffered_seconds=12))

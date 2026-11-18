@@ -9,7 +9,8 @@ class LookupGate:
     interval: float = 60
     gap: float = 0.8
     fallback_interval: float = 180
-    boundary_interval: float = 25
+    boundary_window: float = 60
+    boundary_limit: int = 2
     hourly_limit: int = 24
     next_allowed: float = field(default=0, init=False)
     pending: bool = field(default=True, init=False)
@@ -20,6 +21,7 @@ class LookupGate:
     boundary_pending: bool = field(default=False, init=False)
     retry_until: float = field(default=0, init=False)
     attempts: deque = field(default_factory=deque, init=False)
+    boundary_attempts: deque = field(default_factory=deque, init=False)
 
     def mark_boundary(self):
         self.pending = True
@@ -46,12 +48,16 @@ class LookupGate:
         )
         while self.attempts and self.attempts[0] <= now - 3600:
             self.attempts.popleft()
-        expedited = self.boundary_pending and (
-            not self.attempts or now - self.attempts[-1] >= self.boundary_interval
-        )
+        while self.boundary_attempts and self.boundary_attempts[0] <= now - self.boundary_window:
+            self.boundary_attempts.popleft()
         if (self.in_flight or now < self.retry_until or len(self.attempts) >= self.hourly_limit
-                or (now < self.next_allowed and not expedited) or buffered_seconds < 10
-                or not (self.pending or periodic)):
+                or buffered_seconds < 10 or not (self.pending or periodic)):
+            return False
+        if self.boundary_pending:
+            if len(self.boundary_attempts) >= self.boundary_limit:
+                return False
+            self.boundary_attempts.append(now)
+        elif now < self.next_allowed:
             return False
         self.in_flight = True
         self.pending = False
