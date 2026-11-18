@@ -239,3 +239,32 @@ disabled. Mount `integrations/rehearse_ma_image.py` as the test entry script
 alongside the two overlay modules. It uses the actual player controller
 metadata method and a synthetic session to prove that a new title appears and
 that clearing the snapshot restores the source name.
+
+### Run the Pi-to-server connection without a Mac
+
+`integrations/appliance_link.py` is an optional LAN gateway for one appliance
+and one Music Assistant player. Bind it to the server's private LAN address.
+Give the server a certificate with that address in its subject alternative
+names. Give the Pi a separate client certificate issued by a dedicated CA.
+Keep private keys on their original machines and store the CA signing key
+offline. Neither endpoint uses a publicly trusted certificate or an SSH grant.
+
+The gateway accepts recognized track metadata and writes an atomic snapshot.
+Its Music Assistant route accepts only `players/all` and returns the configured
+player's playback fields. It does not proxy arbitrary API commands. The Pi
+publisher sends title, artist, and album, never audio. When Identify is off or
+the signal is absent, it sends an empty track. Stale snapshots expire.
+
+Run the gateway and metadata publisher under service managers with automatic
+restart. Set the Pi's scrobble configuration URL to the HTTPS gateway origin
+and add `client_tls` with `authority`, `certificate`, and `key` file paths.
+Keep those files private and readable by the service account. Reserve the
+server LAN address, and issue fresh certificates before their expiration. To
+disconnect the Pi immediately, stop the gateway. To retire a client
+certificate, replace the dedicated CA and both endpoint certificates.
+
+The test suite verifies that an uncertified client is rejected, playback
+commands cannot pass, and endpoints receive only the configured data. A real
+Pi-to-SER6 pilot verified metadata snapshot refresh and authenticated
+read-only playback observation after the Mac's temporary tunnels were removed.
+The pilot left Identify and Scrobble off and did not start physical playback.

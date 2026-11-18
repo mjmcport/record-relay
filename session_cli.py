@@ -10,7 +10,7 @@ from time import time
 from threading import Thread
 
 from session import Session
-from providers import authenticated_open, recognize_audd, shazam_recognizer
+from providers import authenticated_open, recognize_audd, shazam_recognizer, tls_transport
 from worker import RecognitionWorker, ScrobbleDelivery
 from music_assistant import MusicAssistantObserver, ScrobbleMonitor
 from receipts import ReceiptStore
@@ -44,8 +44,13 @@ def serve(args):
     monitor = None
     if args.scrobble_config:
         config = json.loads(private_text(args.scrobble_config))
+        transport = authenticated_open
+        if tls := config.get("client_tls"):
+            if not config["music_assistant_url"].startswith("https://"):
+                raise ValueError("Client TLS requires an HTTPS Music Assistant URL")
+            transport = tls_transport(tls["authority"], tls["certificate"], tls["key"])
         observer = MusicAssistantObserver(config["music_assistant_url"], config["music_assistant_token"],
-                                          config["player_id"], config["source_uri"], transport=authenticated_open)
+                                          config["player_id"], config["source_uri"], transport=transport)
         receipt_path = args.scrobble_config.parent / "listens.sqlite"
         if receipt_path.is_symlink():
             raise ValueError("Receipt database must not be a symbolic link")

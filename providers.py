@@ -2,7 +2,8 @@
 import asyncio
 import io
 import json
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+import ssl
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 from uuid import UUID, uuid4
 import wave
 
@@ -13,6 +14,15 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 authenticated_open = build_opener(NoRedirect()).open
+
+
+def tls_transport(authority, certificate, key):
+    """Trust only the appliance CA and present the configured client certificate."""
+    context = ssl.create_default_context(cafile=str(authority))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, key)
+    return build_opener(NoRedirect(), HTTPSHandler(context=context)).open
+
 
 
 def request_json(request, transport):
