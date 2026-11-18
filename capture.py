@@ -44,11 +44,14 @@ class RecentAudio:
             blocks = tuple(self.blocks)
         return b"".join(blocks)
 
-    def wav_snapshot(self):
+    def wav_snapshot(self, *, frames=None):
         result = io.BytesIO()
         with wave.open(result, "wb") as writer:
             writer.setparams((2, 2, RATE, 0, "NONE", "not compressed"))
-            writer.writeframes(self.snapshot())
+            audio = self.snapshot()
+            if frames is not None:
+                audio = audio[-frames * FRAME_BYTES:]
+            writer.writeframes(audio)
         return result.getvalue()
 
 

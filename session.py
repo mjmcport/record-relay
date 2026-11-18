@@ -13,8 +13,9 @@ from recognition import LookupGate
 class Session:
     """A single PCM writer with independent control and recognition callers."""
 
-    def __init__(self, library):
+    def __init__(self, library, *, clock=monotonic):
         self.library = Path(library)
+        self.clock = clock
         self.recent = RecentAudio(seconds=12)
         self.lock = Lock()
         self.recording = None
@@ -24,7 +25,8 @@ class Session:
         self.recognition_epoch = 0
         self.gate = LookupGate()
         self.track = None
-        self.seconds = 0
+        self.frames_since_gap = 0
+        self.quiet_frames = 0
         self.signal = False
         self.last_audio = None
 
@@ -35,7 +37,7 @@ class Session:
             self.track = None
             if not self.identify:
                 self.scrobble = False
-            self.gate.observe(monotonic(), enabled=False, signal=False, buffered_seconds=0)
+            self.gate.observe(self.clock(), enabled=False, signal=False, buffered_seconds=0)
 
     def set_scrobble(self, enabled):
         with self.lock:
@@ -76,30 +78,45 @@ class Session:
         energy = sum(sample * sample for (sample,) in struct.iter_unpack("<h", block))
         rms = math.sqrt(energy / (len(block) // 2))
         with self.lock:
-            self.seconds = min(12, self.seconds + len(block) / (FRAME_BYTES * RATE))
-            self.last_audio = monotonic()
+            frames = len(block) // FRAME_BYTES
+            self.last_audio = self.clock()
             self.signal = rms >= 32768 * 10 ** (-45 / 20)
+            if self.signal:
+                self.quiet_frames = 0
+            else:
+                self.quiet_frames += frames
+            boundary = int(self.gate.gap * RATE)
+            if self.quiet_frames >= boundary:
+                if self.quiet_frames - frames < boundary:
+                    self.recognition_epoch += 1
+                    self.track = None
+                    self.gate.pending = True
+                self.frames_since_gap = 0
+            else:
+                self.frames_since_gap = min(12 * RATE, self.frames_since_gap + frames)
             if self.recording is not None:
                 self.recording.offer(block)
 
-    def lookup_if_due(self, recognize, *, clock=monotonic):
+    def lookup_if_due(self, recognize, *, clock=None):
         """Run in a worker. The injected recognizer receives a short WAV snapshot."""
+        clock = clock or self.clock
         with self.lock:
-            signal = self.signal and self.last_audio is not None and monotonic() - self.last_audio < 1
+            signal = self.signal and self.last_audio is not None and self.clock() - self.last_audio < 1
             if not self.gate.observe(clock(), enabled=self.identify, signal=signal,
-                                     buffered_seconds=self.seconds):
+                                     buffered_seconds=self.frames_since_gap / RATE):
                 return False
             epoch = self.recognition_epoch
+            frames = self.frames_since_gap
         result = None
         try:
-            result = recognize(self.recent.wav_snapshot())
+            result = recognize(self.recent.wav_snapshot(frames=frames))
             return bool(result)
         finally:
             with self.lock:
                 self.gate.complete(clock(), matched=bool(result))
                 if self.identify and self.recognition_epoch == epoch and result:
                     self.track = result
-                    self.track_seen = monotonic()
+                    self.track_seen = self.clock()
 
     def status(self):
         with self.lock:
@@ -110,7 +127,7 @@ class Session:
                 state = "failed" if recording.error else "finished"
             else:
                 state = "recording"
-            now = monotonic()
+            now = self.clock()
             signal = self.signal and self.last_audio is not None and now - self.last_audio < 1
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
             return {"identify": self.identify, "scrobble": self.scrobble,

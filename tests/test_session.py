@@ -65,3 +65,60 @@ class SessionTests(unittest.TestCase):
                 finish.set()
                 worker.join(3)
             self.assertIsNone(session.status()["track"])
+
+    def test_track_boundary_excludes_previous_audio_and_miss_retries(self):
+        with TemporaryDirectory() as folder:
+            now = [0]
+            session = Session(folder, clock=lambda: now[0])
+            first = b"abcd"
+            second = b"efgh"
+            quiet = bytes(4)
+
+            def audio(frame, seconds):
+                session.run(io.BytesIO(frame * round(48000 * seconds)), io.BytesIO())
+
+            session.set_identify(True)
+            audio(first, 12)
+            self.assertTrue(session.lookup_if_due(lambda _: {"title": "First"}))
+            now[0] = 59
+            audio(quiet, .2)
+            audio(first, 1)
+            self.assertEqual(session.status()["track"], {"title": "First"})
+
+            now[0] = 65
+            audio(quiet, 1)
+            self.assertIsNone(session.status()["track"])
+            audio(second, 8)
+            self.assertFalse(session.lookup_if_due(self.fail))
+            audio(second, 2)
+
+            def check_new_audio(sample):
+                with wave.open(io.BytesIO(sample), "rb") as wav:
+                    self.assertGreaterEqual(wav.getnframes(), 480000)
+                    self.assertEqual(wav.readframes(wav.getnframes()), second * wav.getnframes())
+                return None
+
+            self.assertFalse(session.lookup_if_due(check_new_audio))
+            self.assertIsNone(session.status()["track"])
+            now[0] = 184
+            audio(second, 12)
+            self.assertFalse(session.lookup_if_due(self.fail))
+            now[0] = 185
+            audio(second, .1)
+            self.assertTrue(session.lookup_if_due(lambda _: {"title": "Second"}))
+            self.assertEqual(session.status()["track"], {"title": "Second"})
+
+    def test_periodic_lookup_refreshes_gapless_track(self):
+        with TemporaryDirectory() as folder:
+            now = [0]
+            session = Session(folder, clock=lambda: now[0])
+            session.set_identify(True)
+            session.run(io.BytesIO(b"abcd" * 576000), io.BytesIO())
+            self.assertTrue(session.lookup_if_due(lambda _: {"title": "First"}))
+            now[0] = 179
+            session.run(io.BytesIO(b"efgh" * 576000), io.BytesIO())
+            self.assertFalse(session.lookup_if_due(self.fail))
+            now[0] = 180
+            session.run(io.BytesIO(b"efgh" * 4800), io.BytesIO())
+            self.assertTrue(session.lookup_if_due(lambda _: {"title": "Second"}))
+            self.assertEqual(session.status()["track"], {"title": "Second"})

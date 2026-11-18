@@ -188,3 +188,9 @@ Record Relay can show the recognized artist and title in its companion panel. Mu
 Start the panel with `--library /path/to/recordings` to show **Download recordings**. Download a finished WAV to your Mac, then open it in **Review track splits**. The download streams directly to the browser and leaves the side master on the Pi. The panel stays on loopback and requires a same-origin form with the current panel token for each file transfer.
 
 A silent real-Pi pilot verified a short WAV from the Behringer input and a separate single Shazam fingerprint lookup from the private monitor. The lookup did not require sending the excerpt to a speaker or saving an additional recording. The continuous recognition scheduler has simulated tests and remains opt-in.
+
+### How new tracks are detected
+
+After a sustained quiet gap, the panel clears the previous match and waits for at least ten seconds of fresh audio before looking up the next track. Brief dips in level preserve the previous match. A minute between attempts, a longer delay after misses, and a three-minute periodic check for gapless material limit fingerprint requests. The periodic check can take up to three minutes to notice a gapless transition. Recognition runs outside the PCM and recording paths.
+
+The release tests exercise a quiet gap, a short dropout, a no-match retry, and a gapless change with simulated provider responses. The Pi pilot verified a single live fingerprint lookup. Keep Identify off to prevent additional requests when testing recording or reviewing WAVs.
