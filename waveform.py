@@ -27,10 +27,9 @@ def waveform_peaks(reader, columns, *, suggest=False):
                 raise ValueError("Truncated WAV")
             if numpy is not None:
                 stereo = numpy.frombuffer(block, dtype="<i2").reshape(-1, 2)
-                low = stereo.min(axis=0).astype("int32")
-                high = stereo.max(axis=0).astype("int32")
-                left = max(left, int(-low[0]), int(high[0]))
-                right = max(right, int(-low[1]), int(high[1]))
+                l_channel, r_channel = stereo[:, 0], stereo[:, 1]
+                left = max(left, -int(l_channel.min()), int(l_channel.max()))
+                right = max(right, -int(r_channel.min()), int(r_channel.max()))
             else:
                 for l_sample, r_sample in struct.iter_unpack("<hh", block):
                     left = max(left, abs(l_sample))

@@ -4,8 +4,10 @@ from ipaddress import ip_address, ip_network
 import base64
 import json
 import subprocess
-from tempfile import TemporaryDirectory
+from threading import Lock
+from tempfile import NamedTemporaryFile, TemporaryDirectory, gettempdir
 import wave
+from zipfile import ZipFile
 
 from export_track import export_track
 from waveform import waveform_peaks
@@ -41,6 +43,34 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
         "/review/review.mjs": ("text/javascript; charset=utf-8", (directory / "review/review.mjs").read_bytes()),
         "/review/splits.mjs": ("text/javascript; charset=utf-8", (directory / "review/splits.mjs").read_bytes()),
     }
+
+    analysis_lock = Lock()
+
+    def analyze(source):
+        directory = Path(gettempdir()) / "waveforms"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        index = directory / (source.name + ".json")
+        info = source.stat()
+        key = [2, info.st_size, info.st_mtime_ns]
+        with analysis_lock:
+            if index.is_file() and not index.is_symlink() and index.stat().st_size < 512_000:
+                try:
+                    cached = json.loads(index.read_bytes())
+                    if cached["key"] == key:
+                        return cached["waveform"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+            with wave.open(str(source), "rb") as recording:
+                waveform = waveform_peaks(recording, 1000, suggest=True)
+            with NamedTemporaryFile(dir=directory, delete=False) as temporary:
+                pending = Path(temporary.name)
+                try:
+                    temporary.write(json.dumps({"key": key, "waveform": waveform}).encode())
+                    temporary.close()
+                    pending.replace(index)
+                finally:
+                    pending.unlink(missing_ok=True)
+            return waveform
 
     def recording_name(name):
         return re.fullmatch(r"[a-zA-Z0-9_. -]{1,120}\.wav", name, re.IGNORECASE) and not name.startswith(".")
@@ -172,25 +202,58 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 source = library / name
                 if source.is_symlink() or not source.is_file():
                     raise ValueError("Saved side could not be opened.")
+                if self.path == "/recordings/draft":
+                    # Keep review drafts in the panel's private state directory.
+                    drafts = Path(gettempdir()) / "review-drafts"
+                    drafts.mkdir(mode=0o700, exist_ok=True)
+                    draft = drafts / (name + ".json")
+                    if "draft" in data:
+                        payload = data["draft"]
+                        if not isinstance(payload, dict):
+                            raise ValueError("Invalid review draft.")
+                        with NamedTemporaryFile(dir=drafts, delete=False) as temporary:
+                            pending = Path(temporary.name)
+                            try:
+                                temporary.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                                temporary.close()
+                                pending.replace(draft)
+                            finally:
+                                pending.unlink(missing_ok=True)
+                        result = {"saved": True}
+                    else:
+                        result = (json.loads(draft.read_bytes()) if draft.is_file()
+                                  and not draft.is_symlink() and draft.stat().st_size <= 8_100_000 else {})
+                    self.send_body(200, "application/json", json.dumps(result).encode())
+                    return
                 if self.path == "/recordings/waveform":
-                    with wave.open(str(source), "rb") as audio:
-                        result = waveform_peaks(audio, 1000, suggest=True)
+                    result = analyze(source)
                     result["matches"] = recorded_matches(source)
                     self.send_body(200, "application/json", json.dumps(result).encode())
                     return
-                tags = {key: data.get(key, "") for key in ("title", "artist", "album", "album_artist", "track")}
-                if any(not isinstance(value, str) or len(value) > 300 or "\0" in value
-                       for value in tags.values()):
-                    raise ValueError("Tags must be text of no more than 300 characters.")
-                start, end = data["start"], data["end"]
-                if type(start) is not int or type(end) is not int:
-                    raise ValueError("Split times must resolve to whole sample frames.")
+                batch = self.path == "/recordings/export-side"
+                selections = data["tracks"] if batch else [data]
+                if not isinstance(selections, list) or not 1 <= len(selections) <= 100:
+                    raise ValueError("Choose up to 100 tracks.")
+                tracks = []
+                previous_end = 0
+                for index, entry in enumerate(selections):
+                    tags = {key: entry.get(key, "") for key in
+                            ("title", "artist", "album", "album_artist", "track")}
+                    if any(not isinstance(value, str) or len(value) > 300 or "\0" in value
+                           for value in tags.values()):
+                        raise ValueError("Tags must be text of no more than 300 characters.")
+                    start, end = entry["start"], entry["end"]
+                    if type(start) is not int or type(end) is not int or not previous_end <= start < end:
+                        raise ValueError("Choose ordered, non-overlapping sample ranges.")
+                    previous_end = end
+                    label = " - ".join(tags[key] for key in ("artist", "title") if tags[key])
+                    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", label).strip(" .")
+                    tracks.append((start, end, tags, f"{index + 1:02d} - {cleaned[:100] or 'Track'}"))
                 with TemporaryDirectory(prefix="record-relay-export-") as scratch:
                     format = data.get("format", "flac")
                     mime = {"flac": "audio/flac", "mp3": "audio/mpeg", "wav": "audio/wav"}
                     if format not in mime:
                         raise ValueError("Choose a supported export format.")
-                    output = Path(scratch) / ("track." + format)
                     cover = None
                     if image := data.get("cover"):
                         suffix = image["format"]
@@ -202,10 +265,24 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                             raise ValueError("Cover format is invalid or exceeds 6 MB.")
                         cover = Path(scratch) / ("cover." + suffix)
                         cover.write_bytes(content)
-                    export_track(source, output, start, end, tags, cover=cover)
+                    output = Path(scratch) / ("track." + format)
+                    content_type = mime[format]
+                    if batch:
+                        if shutil.disk_usage(scratch).free < source.stat().st_size * 3:
+                            raise ValueError("There is insufficient scratch space.")
+                        bundle = Path(scratch) / "side.zip"
+                        with ZipFile(bundle, "w") as archive:
+                            for start, end, tags, name in tracks:
+                                export_track(source, output, start, end, tags, cover=cover)
+                                archive.write(output, name + "." + format)
+                                output.unlink()
+                        output, content_type = bundle, "application/zip"
+                    else:
+                        start, end, tags, _ = tracks[0]
+                        export_track(source, output, start, end, tags, cover=cover)
                     with output.open("rb") as result:
                         self.send_response(200)
-                        self.send_header("Content-Type", mime[format])
+                        self.send_header("Content-Type", content_type)
                         self.send_header("Content-Length", str(output.stat().st_size))
                         self.send_header("Cache-Control", "no-store")
                         self.end_headers()
@@ -261,7 +338,7 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.send_error(403)
                 return
             if library is not None and self.path in (
-                    "/recordings/waveform", "/recordings/export"):
+                    "/recordings/waveform", "/recordings/export", "/recordings/export-side", "/recordings/draft"):
                 self.review_action()
                 return
             if self.path != "/control":

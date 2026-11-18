@@ -41,6 +41,9 @@ summary{cursor:pointer;width:max-content;color:var(--accent);padding-block:.6rem
 .track-select[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 #splits small{display:block;margin:.35rem .55rem}
 @media(max-width:540px){.track-workspace{grid-template-columns:1fr;gap:0}}
+.hint{font-size:.9rem;color:#ddc9ae}
+nav{margin-bottom:1.2rem}
+progress{width:min(16rem,100%);accent-color:var(--accent)}
 [hidden]{display:none!important}
 </style>
 <main data-review-token="__REVIEW_TOKEN__">
@@ -52,23 +55,28 @@ summary{cursor:pointer;width:max-content;color:var(--accent);padding-block:.6rem
 <audio id="player" controls preload="metadata" aria-label="Side master playback"></audio>
 <canvas id="peaks" width="1000" height="180" tabindex="0"
   aria-label="Stereo waveform. Arrow keys seek by five seconds. Home and End seek to either end."></canvas>
+<p class="hint">Click or use arrow keys to seek. Drag an amber marker to move a start. For precise edits, use the selected track’s start controls.</p>
 <progress id="load-progress" aria-label="Loading saved side" hidden></progress>
 <button type="button" id="retry-side" hidden>Retry loading side</button>
 <p id="status" role="status">Choose the recording and its waveform JSON to begin.</p>
 </section>
 <section aria-labelledby="splits-label">
 <h2 id="splits-label">Track starts</h2>
-<label>Time in seconds <input id="seconds" type="number" min="0" step="any" value="0"></label>
+<details id="advanced"><summary>Advanced split controls</summary><label>Time in seconds <input id="seconds" type="number" min="0" step="any" value="0"></label>
 <button id="suggest" disabled>Use suggested starts</button>
 <button id="position" disabled>Use playback position</button>
 <button id="add" disabled>Save track start</button>
 <button id="save" disabled>Download split plan</button>
+</details>
 <div id="export-options" hidden>
 <h3>Album and export</h3>
+<p>Export all tracks downloads one ZIP using the current tags and starts. Your side master remains on the Pi.</p>
+<button id="export-side" type="button">Export all tracks</button><button id="save-draft" type="button" class="secondary">Save review</button>
+<p id="draft-status" role="status">Save to resume this review later.</p>
 <label>Album artist <input id="album-artist" maxlength="300"></label>
 <label>Album title <input id="album-title" maxlength="300"></label>
 <label>Export format <select id="format"><option value="flac">FLAC · lossless</option><option value="mp3">MP3 · compact</option><option value="wav">WAV · uncompressed</option></select></label>
-<label>Front cover for this side <input id="cover" type="file" accept="image/png,image/jpeg"><img id="cover-preview" alt="Selected front cover" width="96" height="96" hidden></label>
+<label>Front cover for this side <input id="cover" type="file" accept="image/png,image/jpeg"><button id="remove-cover" type="button" class="secondary">Remove cover</button><img id="cover-preview" alt="Selected front cover" width="96" height="96" hidden></label>
 </div>
 <div class="track-workspace">
 <ol id="splits" aria-label="Track list"></ol>
@@ -76,6 +84,9 @@ summary{cursor:pointer;width:max-content;color:var(--accent);padding-block:.6rem
 <h3 id="editor-heading">Track details</h3>
 <label>Start time in seconds <input id="editor-boundary" type="number" min="0" step="any"></label>
 <button id="move-marker" type="button" class="secondary">Move start</button>
+<button id="earlier-marker" type="button" class="secondary">−0.1 s</button>
+<button id="later-marker" type="button" class="secondary">+0.1 s</button>
+<button id="preview-marker" type="button" class="secondary">Cue before start</button>
 <button id="remove-marker" type="button" class="secondary">Remove marker</button>
 <label>Track title <input id="track-title" maxlength="300"></label>
 <label>Track artist <input id="track-artist" maxlength="300" placeholder="Uses album artist if left blank"></label>

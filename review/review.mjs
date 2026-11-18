@@ -12,6 +12,17 @@ let editing;
 let generation = 0;
 let savedSide;
 let selectedFrame;
+let restoredCover;
+let reviewDirty = false;
+function dirty() {
+  if (!savedSide) return;
+  reviewDirty = true;
+  el("draft-status").textContent = "Unsaved changes";
+}
+window.addEventListener("beforeunload", event => {
+  if (reviewDirty) event.preventDefault();
+});
+
 const confirmed = new Set();
 const trackTags = new Map();
 
@@ -40,7 +51,7 @@ function saveBlob(blob, name) {
 
 async function coverData() {
   const file = el("cover").files[0];
-  if (!file) return undefined;
+  if (!file) return restoredCover;
   if (file.size > 6000000 || !["image/png", "image/jpeg"].includes(file.type)) {
     throw new Error("Choose a PNG or JPEG cover up to 6 MB.");
   }
@@ -53,14 +64,18 @@ async function coverData() {
   return {format: file.type.split("/")[1], data: image.split(",")[1]};
 }
 
-async function exportTrack(frame, index) {
+function trackExportOptions(frame, index) {
   const tags = {...trackTags.get(frame)};
   tags.artist ||= el("album-artist").value;
   tags.album ||= el("album-title").value;
   tags.album_artist = el("album-artist").value;
+  return {...tags, start: frame, end: points[index + 1] ?? waveform.frames, track: String(index + 1)};
+}
+
+async function exportTrack(frame, index) {
+  const tags = trackExportOptions(frame, index);
   const format = el("format").value;
   const response = await sideRequest("export", {...tags, name: savedSide,
-    start: frame, end: points[index + 1] ?? waveform.frames, track: String(index + 1),
     format, cover: format === "wav" ? undefined : await coverData()});
   const safe = [tags.artist, tags.title].filter(Boolean).join(" - ")
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").trim().slice(0, 110);
@@ -89,6 +104,32 @@ async function loadSavedSide(name) {
     el("album-title").value = identity.album || "";
     el("load-progress").hidden = true;
     points = [...(graph.suggested_starts || [])];
+    try {
+      const draft = await (await sideRequest("draft", {name})).json();
+      if (generation === current && draft.frames === graph.frames &&
+          draft.sample_rate === graph.sample_rate && Array.isArray(draft.points)) {
+        points = splitPlan(name, graph, draft.points).tracks.map(track => track.start);
+        for (const [frame, tags] of Array.isArray(draft.tags) ? draft.tags : []) {
+          if (points.includes(frame) && tags && typeof tags === "object") trackTags.set(frame, tags);
+        }
+        for (const frame of Array.isArray(draft.confirmed) ? draft.confirmed : []) {
+          if (points.includes(frame)) confirmed.add(frame);
+        }
+        el("album-artist").value = typeof draft.artist === "string" ? draft.artist : "";
+        el("album-title").value = typeof draft.album === "string" ? draft.album : "";
+        if (["flac","mp3","wav"].includes(draft.format)) el("format").value = draft.format;
+        if (["png","jpeg"].includes(draft.cover?.format) && typeof draft.cover.data === "string" &&
+            /^[A-Za-z0-9+/=]+$/.test(draft.cover.data)) {
+          restoredCover = draft.cover;
+          el("cover-preview").src = "data:image/" + restoredCover.format + ";base64," + restoredCover.data;
+          el("cover-preview").hidden = false;
+        }
+        selectedFrame = points.includes(draft.selected) ? draft.selected : points[0];
+        el("draft-status").textContent = "Saved review restored.";
+      }
+    } catch {
+      el("draft-status").textContent = "Could not load a saved review. The master is available.";
+    }
     render();
   } catch (error) {
     if (generation === current) {
@@ -107,6 +148,7 @@ function ready() {
 function render() {
   const usable = ready();
   el("export-options").hidden = !savedSide;
+
   el("position").disabled = el("add").disabled = !usable;
   el("suggest").disabled = !usable || !waveform?.suggested_starts?.length;
   el("save").disabled = !usable || points.length === 0;
@@ -129,6 +171,7 @@ function render() {
     points.forEach(frame => context.fillRect(frame / waveform.frames * width, 0, 2, height));
   }
   if (!points.includes(selectedFrame)) selectedFrame = points[0];
+  el("splits").parentElement.append(el("track-editor"));
   el("splits").replaceChildren(...points.map((frame, index) => {
     const item = document.createElement("li");
     item.dataset.frame = frame;
@@ -171,6 +214,12 @@ function render() {
     }
     return item;
   }));
+  const workspace = el("track-editor").closest(".track-workspace") || el("splits").parentElement;
+  if (savedSide && matchMedia("(max-width: 540px)").matches && selectedFrame !== undefined) {
+    el("splits").querySelector(`li[data-frame="${selectedFrame}"]`)?.append(el("track-editor"));
+  } else {
+    workspace.append(el("track-editor"));
+  }
   renderEditor();
 }
 
@@ -187,6 +236,7 @@ function renderEditor() {
     field.oninput = () => {
       tags[key] = field.value;
       confirmed.delete(frame);
+      dirty();
     };
   }
   el("editor-boundary").value = frame / waveform.sample_rate;
@@ -195,10 +245,18 @@ function renderEditor() {
     el("seconds").value = el("editor-boundary").value;
     el("add").click();
   };
+  for (const [id, step] of [["earlier-marker",-0.1],["later-marker",0.1]]) {
+    el(id).onclick = () => {
+      el("editor-boundary").value = Math.max(0, frame / waveform.sample_rate + step).toFixed(3);
+      el("move-marker").click();
+    };
+  }
+  el("preview-marker").onclick = () => { player.currentTime = Math.max(0, frame / waveform.sample_rate - 2); };
   el("remove-marker").onclick = () => {
     points = points.filter(point => point !== frame);
     trackTags.delete(frame);
     confirmed.delete(frame);
+    dirty();
     if (editing === frame) editing = undefined;
     selectedFrame = points[Math.min(index, points.length - 1)];
     render();
@@ -209,6 +267,7 @@ function renderEditor() {
       return;
     }
     confirmed.add(frame);
+    dirty();
     render();
     el("editor-status").textContent = "Track tags confirmed.";
   };
@@ -272,6 +331,7 @@ el("suggest").onclick = () => {
   points = [...new Set([...points, ...(waveform.suggested_starts || [])])].sort((a, b) => a - b);
   editing = undefined;
   render();
+  dirty();
   el("status").textContent = "Suggested starts added. Listen around each one before exporting.";
 };
 canvas.onkeydown = event => {
@@ -290,11 +350,35 @@ player.ontimeupdate = () => {
     else item.removeAttribute("aria-current");
   }
 };
-canvas.onclick = event => {
-  if (!ready()) return;
+let dragging;
+function fractionAt(event) {
   const bounds = canvas.getBoundingClientRect();
-  player.currentTime = player.duration * Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-};
+  return Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+}
+canvas.addEventListener("pointerdown", event => {
+  if (!ready() || event.button !== 0) return;
+  const bounds = canvas.getBoundingClientRect();
+  const nearby = points.find(frame => Math.abs(
+    frame / waveform.frames - fractionAt(event)) * bounds.width < 10);
+  if (nearby === undefined) return;
+  dragging = {frame: nearby, x: event.clientX, pointer: event.pointerId};
+  canvas.setPointerCapture(event.pointerId);
+});
+canvas.addEventListener("pointercancel", () => { dragging = undefined; });
+canvas.addEventListener("pointerup", event => {
+  if (!ready()) return;
+  const place = fractionAt(event);
+  const marker = dragging;
+  dragging = undefined;
+  if (marker?.pointer === event.pointerId && Math.abs(event.clientX - marker.x) >= 4) {
+    editing = marker.frame;
+    el("seconds").value = Math.min((waveform.frames - 1) / waveform.sample_rate,
+      place * player.duration);
+    el("add").click();
+  } else {
+    player.currentTime = player.duration * place;
+  }
+});
 el("position").onclick = () => { el("seconds").value = player.currentTime; };
 el("add").onclick = () => {
   if (!ready()) return;
@@ -310,6 +394,7 @@ el("add").onclick = () => {
   }
   points = [...new Set([...points.filter(point => point !== editing), frame])].sort((a, b) => a - b);
   selectedFrame = frame;
+  dirty();
   editing = undefined;
   render();
 };
@@ -324,8 +409,46 @@ el("save").onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
+el("export-side").onclick = async () => {
+  if (!savedSide || !ready() || !points.length) return;
+  const button = el("export-side");
+  button.disabled = true;
+  el("draft-status").textContent = "Exporting tracks. This may take a minute on the Pi.";
+  try {
+    const format = el("format").value;
+    const response = await sideRequest("export-side", {name: savedSide, format,
+      tracks: points.map(trackExportOptions), cover: format === "wav" ? undefined : await coverData()});
+    saveBlob(await response.blob(), savedSide.replace(/\.wav$/i, "") + "-tracks.zip");
+    el("draft-status").textContent = "Track archive downloaded.";
+  } catch (error) {
+    el("draft-status").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+el("save-draft").onclick = async () => {
+  if (!savedSide || !ready()) return;
+  const button = el("save-draft");
+  button.disabled = true;
+  try {
+    await sideRequest("draft", {name: savedSide, draft: {
+      frames: waveform.frames, sample_rate: waveform.sample_rate, points,
+      tags: [...trackTags.entries()], confirmed: [...confirmed], selected: selectedFrame,
+      artist: el("album-artist").value, album: el("album-title").value,
+      format: el("format").value, cover: await coverData(),
+    }});
+    reviewDirty = false;
+    el("draft-status").textContent = "Review saved on the Pi.";
+  } catch (error) {
+    el("draft-status").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+
 let artworkUrl;
 el("cover").onchange = () => {
+  dirty();
   if (artworkUrl) URL.revokeObjectURL(artworkUrl);
   const file = el("cover").files[0];
   artworkUrl = file && ["image/png","image/jpeg"].includes(file.type) ?
@@ -334,6 +457,12 @@ el("cover").onchange = () => {
   if (artworkUrl) el("cover-preview").src = artworkUrl;
   else el("cover-preview").removeAttribute("src");
 };
-el("format").onchange = () => { el("cover").disabled = el("format").value === "wav"; };
+el("remove-cover").onclick = () => {
+  restoredCover = undefined;
+  el("cover").value = "";
+  el("cover").onchange();
+};
+el("album-artist").oninput = el("album-title").oninput = dirty;
+el("format").onchange = () => { dirty(); el("cover").disabled = el("format").value === "wav"; };
 const side = new URLSearchParams(location.search).get("side");
 if (side) { el("retry-side").onclick = () => loadSavedSide(side); loadSavedSide(side); }

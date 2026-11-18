@@ -393,3 +393,16 @@ full-length sides. Quiet-gap starts are suggestions and can be edited or
 deleted before export. The browser exports FLAC and MP3 with optional artwork,
 or uncompressed WAV. Export filenames use edited artist and title when
 provided. Original side masters are unchanged.
+
+The review workbench keeps album defaults, cover art, confirmed tags and
+editable markers together. Choose **Save review** to keep a separate draft on
+the appliance. Configure the panel's temporary directory as a private
+persistent service state directory to retain drafts across restarts.
+**Export all tracks** downloads the current ranges and tags as a ZIP.
+The original side WAV remains available for re-review.
+
+The LAN Pi was verified in Chrome with a full-length saved side. It opened
+the audio without downloading the entire WAV first, then loaded the waveform
+and suggested markers. A separate replay of actual saved audio verified late
+save, continuation and reopening. Recognition was simulated in that replay
+to avoid submitting another audio fingerprint.
