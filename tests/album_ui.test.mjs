@@ -24,6 +24,9 @@ test('album workbench is connected to persistent catalog and capture APIs', asyn
   assert.match(client, /record-relay-project/);
   assert.match(client, /record-relay-active-take/);
   assert.match(client, /stopButton/);
+  assert.match(client, /Local catalog connected\./);
+  assert.match(html, /live-view-help/);
+  assert.match(html, /animated view opens separately/);
 });
 
 test('optional visualization exposes static and keyboard-accessible motion paths', async () => {

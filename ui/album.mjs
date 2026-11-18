@@ -602,7 +602,11 @@ function startPolling() {
 }
 
 updateSideButtons();
-refresh().then(refreshCapture).catch(error => { say(message, `Local catalog unavailable: ${error.message}`); });
+refresh().then(() => {
+  const count = state.projects.length;
+  say(message, `Local catalog connected. ${count} album ${count === 1 ? 'project' : 'projects'} available.`);
+  return refreshCapture();
+}).catch(error => { say(message, `Local catalog unavailable: ${error.message}`); });
 startPolling();
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && document.querySelector('#live-view').checked) {
