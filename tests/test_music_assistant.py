@@ -65,3 +65,25 @@ class MusicAssistantTests(unittest.TestCase):
             monitor.tick(state | {"signal": False}, lambda _track: True)
             self.assertFalse(monitor.tick(state, lambda _track: True))
             self.assertEqual(len(sent), 1)
+
+    def test_same_match_after_confirmed_boundary_starts_a_new_listen(self):
+        from music_assistant import ScrobbleMonitor
+        from types import SimpleNamespace
+
+        class Observer:
+            def audible(self):
+                return True
+
+        clock = iter((10, 30))
+        observed = []
+        delivery = SimpleNamespace(
+            timing=SimpleNamespace(previous=None),
+            observe=lambda play, **kwargs: observed.append(play.receipt_key),
+        )
+        monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: next(clock))
+        status = {"signal": True, "scrobble": True, "track_epoch": 2,
+                  "track": {"artist": "Artist", "title": "Track"}}
+        monitor.tick(status, lambda _: True)
+        monitor.tick(status, lambda _: True)
+        monitor.tick({**status, "track_epoch": 3}, lambda _: True)
+        self.assertEqual([key[1] for key in observed], [10, 10, 30])

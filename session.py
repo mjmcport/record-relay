@@ -23,6 +23,7 @@ class Session:
         self.scrobble = False
         self.track_seen = None
         self.recognition_epoch = 0
+        self.track_epoch = 0
         self.gate = LookupGate()
         self.track = None
         self.frames_since_gap = 0
@@ -89,6 +90,7 @@ class Session:
             if self.quiet_frames >= boundary:
                 if self.quiet_frames - frames < boundary:
                     self.recognition_epoch += 1
+                    self.track_epoch += 1
                     self.track = None
                     self.gate.pending = True
                 self.frames_since_gap = 0
@@ -131,7 +133,8 @@ class Session:
             signal = self.signal and self.last_audio is not None and now - self.last_audio < 1
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
             return {"identify": self.identify, "scrobble": self.scrobble,
-                    "signal": signal, "recording": state, "track": track}
+                    "signal": signal, "recording": state, "track": track,
+                    "track_epoch": self.track_epoch}
 
     def run(self, source, playback):
         return relay(source, playback, self.recent, recorder=self)

@@ -64,6 +64,7 @@ class ScrobbleMonitor:
         self.delivery = delivery
         self.wall_clock = wall_clock
         self.play = None
+        self.track_epoch = None
 
     def tick(self, status, still_enabled):
         from listening import ListeningInstance
@@ -77,8 +78,10 @@ class ScrobbleMonitor:
             self.delivery.timing.previous = None
             return False
         identity = json.dumps([artist.casefold().strip(), title.casefold().strip()])
-        if self.play is None or self.play.track_id != identity:
+        epoch = status.get("track_epoch")
+        if self.play is None or self.play.track_id != identity or self.track_epoch != epoch:
             self.play = ListeningInstance(identity, int(self.wall_clock()), None)
+            self.track_epoch = epoch
         try:
             audible = self.observer.audible()
         except Exception:
