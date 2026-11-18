@@ -20,6 +20,12 @@ class RecentAudio:
         self.limit = seconds * RATE * FRAME_BYTES
         self.blocks = deque()
         self.size = 0
+        # Absolute stereo-frame coordinates let a late save name the exact
+        # retained interval. The generation changes only if the caller resets
+        # the ring; ordinary rollover never changes it.
+        self.generation = 0
+        self.oldest_frame = 0
+        self.newest_frame = 0
         self.lock = Lock()
 
     def append(self, block):
@@ -29,6 +35,7 @@ class RecentAudio:
             block = block[-self.limit:]
             self.blocks.append(block)
             self.size += len(block)
+            self.newest_frame += len(block) // FRAME_BYTES
             while self.size > self.limit:
                 excess = self.size - self.limit
                 oldest = self.blocks.popleft()
@@ -37,15 +44,68 @@ class RecentAudio:
                     self.size -= excess
                 else:
                     self.size -= len(oldest)
+            self.oldest_frame = self.newest_frame - self.size // FRAME_BYTES
 
     def snapshot_blocks(self):
         with self.lock:
             return tuple(self.blocks)
 
+    def snapshot_range(self, start_frame, end_frame=None, *, generation=None):
+        """Return immutable PCM for an available half-open absolute frame range.
+
+        Bounds are checked under the same lock as the block snapshot, so a
+        caller gets either the exact requested window or a stale-range error;
+        it can never receive a silently shortened prefix after ring rollover.
+        """
+        with self.lock:
+            if generation is not None and generation != self.generation:
+                raise ValueError("Buffered audio generation changed")
+            end_frame = self.newest_frame if end_frame is None else end_frame
+            if (type(start_frame) is not int or type(end_frame) is not int or
+                    start_frame < self.oldest_frame or end_frame > self.newest_frame or
+                    end_frame <= start_frame):
+                raise ValueError("Requested buffered audio range is unavailable")
+            offset = (start_frame - self.oldest_frame) * FRAME_BYTES
+            length = (end_frame - start_frame) * FRAME_BYTES
+            blocks = tuple(self.blocks)
+        joined = b"".join(blocks)
+        return joined[offset:offset + length]
+
+    def snapshot_selection(self, start_frame, end_frame=None, *, generation=None):
+        """Return selected prefix blocks and their validated absolute bounds.
+
+        The returned blocks are immutable bytes suitable for BackgroundRecording
+        prefix input; live frames offered after the caller attaches that writer
+        begin at the returned ``end_frame`` edge.
+        """
+        with self.lock:
+            if generation is not None and generation != self.generation:
+                raise ValueError("Buffered audio generation changed")
+            selected_end = self.newest_frame if end_frame is None else end_frame
+            if (type(start_frame) is not int or type(selected_end) is not int or
+                    start_frame < self.oldest_frame or selected_end > self.newest_frame or
+                    selected_end <= start_frame):
+                raise ValueError("Requested buffered audio range is unavailable")
+            offset = (start_frame - self.oldest_frame) * FRAME_BYTES
+            length = (selected_end - start_frame) * FRAME_BYTES
+            blocks = tuple(self.blocks)
+            selection = {"generation": self.generation, "start_frame": start_frame,
+                         "end_frame": selected_end}
+        audio = b"".join(blocks)[offset:offset + length]
+        return selection, (audio,)
+
+    def bounds(self):
+        with self.lock:
+            return {"generation": self.generation,
+                    "oldest_frame": self.oldest_frame,
+                    "newest_frame": self.newest_frame}
+
     def clear(self):
         with self.lock:
             self.blocks.clear()
             self.size = 0
+            self.generation += 1
+            self.oldest_frame = self.newest_frame
 
     def snapshot(self):
         # Copy references under the lock. Assemble the immutable audio outside it.
@@ -64,29 +124,60 @@ class RecentAudio:
         return result.getvalue()
 
 
-def relay(source, playback, recent, *, recorder=None):
-    """Pass complete frames through unchanged. Only the playback sink paces input."""
+def relay(source, playback, recent, *, recorder=None, on_playback_error=None):
+    """Relay complete frames, keeping capture alive if playback fails.
+
+    The source remains the pacing source after a playback error. The optional
+    sink is detached once and reported; recent audio and the recorder continue
+    receiving every complete input frame. Return value remains the historical
+    synchronous frame count.
+    """
     pending = b""
     frames = 0
-    while block := source.read(BLOCK_BYTES):
+    playback_live = True
+    while True:
+        try:
+            block = source.read(BLOCK_BYTES)
+        except Exception as error:
+            if recorder is not None and hasattr(recorder, "interrupt"):
+                recorder.interrupt(error)
+            raise
+        if not block:
+            break
         pending += block
         usable = len(pending) - len(pending) % FRAME_BYTES
         if not usable:
             continue
         audio, pending = pending[:usable], pending[usable:]
-        remaining = memoryview(audio)
-        while remaining:
-            sent = playback.write(remaining)
-            if not sent:
-                raise OSError("Playback sink did not accept audio")
-            remaining = remaining[sent:]
-        playback.flush()
+        if playback_live:
+            try:
+                remaining = memoryview(audio)
+                while remaining:
+                    sent = playback.write(remaining)
+                    if not sent:
+                        raise OSError("Playback sink did not accept audio")
+                    remaining = remaining[sent:]
+                playback.flush()
+            except (OSError, BrokenPipeError, ValueError) as error:
+                playback_live = False
+                if on_playback_error is not None:
+                    try:
+                        on_playback_error(error)
+                    except Exception:
+                        # Diagnostics must not take down the capture path.
+                        pass
+                else:
+                    print(f"Playback sink unavailable; capture continues: {error}",
+                          file=sys.stderr)
         recent.append(audio)
         if recorder is not None:
             recorder.offer(audio)
         frames += usable // FRAME_BYTES
     if pending:
-        raise ValueError("Input ended with an incomplete stereo frame")
+        error = ValueError("Input ended with an incomplete stereo frame")
+        if recorder is not None and hasattr(recorder, "interrupt"):
+            recorder.interrupt(error)
+        raise error
     return frames
 
 

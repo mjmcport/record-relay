@@ -1,5 +1,6 @@
 """Bounded side recording from a supplied PCM stream, separate from playback."""
 import argparse
+import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -19,14 +20,32 @@ def record_side(source, destination, maximum_seconds, *, enabled=False, before_p
     with TemporaryDirectory(dir=destination.parent, prefix=".record-relay-") as folder:
         candidate = Path(folder) / "side.wav"
         count = 0
+        read_error = None
         with wave.open(str(candidate), "wb") as writer:
             writer.setparams((2, 2, RATE, 0, "NONE", "not compressed"))
             while count < limit:
-                block = source.read(min(BLOCK_BYTES, limit - count))
+                try:
+                    block = source.read(min(BLOCK_BYTES, limit - count))
+                except Exception as error:
+                    read_error = error
+                    break
                 if not block:
                     break
                 writer.writeframesraw(block)
                 count += len(block)
+        if read_error is not None:
+            if count and count % FRAME_BYTES == 0:
+                partial = destination.with_name(destination.stem + ".partial.wav")
+                with candidate.open("rb") as source_file:
+                    os.fsync(source_file.fileno())
+                partial.hardlink_to(candidate)
+                directory_fd = os.open(partial.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+                raise OSError(f"Capture interrupted; recoverable partial retained at {partial.name}") from read_error
+            raise read_error
         if not count or count % FRAME_BYTES:
             raise ValueError("Recording is empty or ends in a partial stereo frame")
         if before_publish is not None:

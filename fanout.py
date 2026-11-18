@@ -17,6 +17,7 @@ class BackgroundRecording:
         self.closing = Event()
         self.finished = Event()
         self.overrun = Event()
+        self.interrupted_error = None
         self.error = None
         self.frames = 0
         self.prefix = deque(prefix)
@@ -38,6 +39,12 @@ class BackgroundRecording:
         except Full:
             self.overrun.set()
             self.closing.set()
+
+    def interrupt(self, error):
+        """Stop this take after an input fault without treating EOF as success."""
+        if self.interrupted_error is None:
+            self.interrupted_error = error
+        self.closing.set()
 
     def add_match(self, frame, match):
         if self.closing.is_set():
@@ -74,6 +81,8 @@ class BackgroundRecording:
                 self.pending = self.queue.get(timeout=0.05)
             except Empty:
                 if self.closing.is_set():
+                    if self.interrupted_error is not None:
+                        raise OSError(f"Capture interrupted: {self.interrupted_error}") from self.interrupted_error
                     return b""
         block, self.pending = self.pending[:size], self.pending[size:]
         return block
