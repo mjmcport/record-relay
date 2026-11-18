@@ -60,7 +60,7 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
     def fingerprint_rate_available():
         with fingerprint_lock:
             now = monotonic()
-            if now - last_fingerprint_request[0] < 1 / 3:
+            if now - last_fingerprint_request[0] < 1.0:
                 return False
             last_fingerprint_request[0] = now
             return True
@@ -277,12 +277,21 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                         raise ValueError("Confirm the non-commercial AcoustID lookup before sending a fingerprint.")
                     if not fingerprint_rate_available():
                         self.send_body(429, "application/json",
-                                       b'{"error":"AcoustID lookup is limited to three requests per second."}')
+                                       b'{"error":"Record Relay allows one AcoustID lookup per second."}')
                         return
                     from fingerprinting import identify_saved_segment
-                    result = identify_saved_segment(
-                        source, data.get("start"), data.get("end"), acoustid_client_key,
-                        fpcalc=fpcalc)
+                    try:
+                        result = identify_saved_segment(
+                            source, data.get("start"), data.get("end"), acoustid_client_key,
+                            sample_position=data.get("sample_position", "beginning"), fpcalc=fpcalc)
+                    except ValueError as exc:
+                        self.send_body(400, "application/json",
+                                       json.dumps({"error": str(exc)}).encode())
+                        return
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        self.send_body(503, "application/json",
+                                       b'{"error":"AcoustID could not complete this lookup. Check network access and fpcalc; the master was not changed."}')
+                        return
                     self.send_body(200, "application/json", json.dumps(result).encode())
                     return
                 batch = self.path == "/recordings/export-side"

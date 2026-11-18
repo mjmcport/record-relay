@@ -5,7 +5,7 @@ import unittest
 import wave
 from urllib.parse import parse_qs, urlsplit
 
-from fingerprinting import identify_saved_segment, lookup_acoustid
+from fingerprinting import _segment_wav, identify_saved_segment, lookup_acoustid
 
 
 class FingerprintingTests(unittest.TestCase):
@@ -61,6 +61,29 @@ class FingerprintingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "at least ten seconds"):
                 identify_saved_segment(path, 0, 9 * 48000, "abcdefgh12345678",
                                        runner=lambda *a, **k: self.fail("must not run"), transport=lambda *a, **k: None)
+
+    def test_long_segment_samples_beginning_middle_or_end_but_sends_full_duration(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "long-side.wav"
+            rate = 48_000
+            seconds = 130
+            with wave.open(str(path), "wb") as writer:
+                writer.setparams((2, 2, rate, 0, "NONE", "not compressed"))
+                # Stamp each second with its second index so the excerpt offset is observable.
+                for second in range(seconds):
+                    writer.writeframes((second.to_bytes(2, "little", signed=True) * 2) * rate)
+
+            expected = {"beginning": (0, 0), "middle": (5, 5), "end": (10, 10)}
+            for position, (offset, first_sample) in expected.items():
+                audio, full_duration, sample_start, sample_duration = _segment_wav(
+                    path, 0, seconds * rate, sample_position=position)
+                self.assertEqual((full_duration, sample_start, sample_duration), (130, offset, 120))
+                with wave.open(__import__("io").BytesIO(audio), "rb") as sample:
+                    first_frame = sample.readframes(1)
+                self.assertEqual(int.from_bytes(first_frame[:2], "little", signed=True), first_sample)
+
+            with self.assertRaisesRegex(ValueError, "beginning, middle or end"):
+                _segment_wav(path, 0, seconds * rate, sample_position="random")
 
 
 if __name__ == "__main__":

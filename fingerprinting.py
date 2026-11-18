@@ -13,7 +13,7 @@ ACOUSTID_LOOKUP = "https://api.acoustid.org/v2/lookup"
 MAX_LOOKUP_SECONDS = 120
 
 
-def _segment_wav(path, start_frame, end_frame):
+def _segment_wav(path, start_frame, end_frame, *, sample_position="beginning"):
     with wave.open(str(path), "rb") as source:
         if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (2, 2, 48000):
             raise ValueError("AcoustID requires a 48 kHz, 16-bit stereo WAV master")
@@ -24,8 +24,12 @@ def _segment_wav(path, start_frame, end_frame):
         length = end_frame - start_frame
         if length < 10 * source.getframerate():
             raise ValueError("Choose at least ten seconds of reviewed audio")
-        source.setpos(start_frame)
         frames = min(length, MAX_LOOKUP_SECONDS * source.getframerate())
+        if sample_position not in ("beginning", "middle", "end"):
+            raise ValueError("Choose the beginning, middle or end of this track")
+        offset = {"beginning": 0, "middle": (length - frames) // 2,
+                  "end": length - frames}[sample_position]
+        source.setpos(start_frame + offset)
         pcm = source.readframes(frames)
         if len(pcm) != frames * 4:
             raise ValueError("The selected audio range is incomplete")
@@ -33,11 +37,14 @@ def _segment_wav(path, start_frame, end_frame):
         with wave.open(result, "wb") as output:
             output.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
             output.writeframes(pcm)
-    return result.getvalue(), length // source.getframerate()
+    return (result.getvalue(), length // source.getframerate(),
+            offset // source.getframerate(), frames // source.getframerate())
 
 
-def make_fingerprint(path, start_frame, end_frame, *, fpcalc="fpcalc", runner=subprocess.run):
-    audio, duration = _segment_wav(path, start_frame, end_frame)
+def make_fingerprint(path, start_frame, end_frame, *, sample_position="beginning",
+                     fpcalc="fpcalc", runner=subprocess.run):
+    audio, duration, sample_start, sample_duration = _segment_wav(
+        path, start_frame, end_frame, sample_position=sample_position)
     result = runner([fpcalc, "-json", "-length", str(MAX_LOOKUP_SECONDS), "-"],
                     input=audio, capture_output=True, check=True, timeout=30)
     if len(result.stdout) > 256_000:
@@ -49,7 +56,7 @@ def make_fingerprint(path, start_frame, end_frame, *, fpcalc="fpcalc", runner=su
     fingerprint = payload.get("fingerprint") if isinstance(payload, dict) else None
     if not isinstance(fingerprint, str) or not 10 <= len(fingerprint) <= 128_000:
         raise ValueError("Fingerprint tool returned no usable result")
-    return fingerprint, duration
+    return fingerprint, duration, sample_start, sample_duration
 
 
 def lookup_acoustid(fingerprint, duration, client_key, *, transport=authenticated_open):
@@ -102,7 +109,12 @@ def lookup_acoustid(fingerprint, duration, client_key, *, transport=authenticate
 
 
 def identify_saved_segment(path, start_frame, end_frame, client_key, *, fpcalc="fpcalc",
-                           runner=subprocess.run, transport=authenticated_open):
-    fingerprint, duration = make_fingerprint(path, start_frame, end_frame,
-                                             fpcalc=fpcalc, runner=runner)
-    return lookup_acoustid(fingerprint, duration, client_key, transport=transport)
+                           sample_position="beginning", runner=subprocess.run,
+                           transport=authenticated_open):
+    fingerprint, duration, sample_start, sample_duration = make_fingerprint(
+        path, start_frame, end_frame, sample_position=sample_position,
+        fpcalc=fpcalc, runner=runner)
+    result = lookup_acoustid(fingerprint, duration, client_key, transport=transport)
+    result.update({"sample_position": sample_position, "sample_start_seconds": sample_start,
+                   "sample_duration_seconds": sample_duration})
+    return result

@@ -37,6 +37,7 @@ class RecordingDownloads(unittest.TestCase):
 
                     def lookup(ack):
                         body = json.dumps({"name": "side.wav", "start": 0, "end": 480_000,
+                                           "sample_position": "middle",
                                            "noncommercial_ack": ack}).encode()
                         return urlopen(Request(url + "/recordings/fingerprint", body, {
                             "Origin": url, "Cookie": cookie, "X-Control-Token": token,
@@ -56,7 +57,9 @@ class RecordingDownloads(unittest.TestCase):
                             lookup(True)
                         self.assertEqual(error.exception.code, 429)
                         error.exception.close()
-                        identify.assert_called_once()
+                        identify.assert_called_once_with(
+                            library / "side.wav", 0, 480_000, "abcdefgh12345678",
+                            sample_position="middle", fpcalc="fpcalc")
                 finally:
                     server.shutdown()
                     thread.join()

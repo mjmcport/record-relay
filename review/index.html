@@ -93,10 +93,15 @@ progress{width:min(16rem,100%);accent-color:var(--accent)}
 <label>Track album <input id="track-album" maxlength="300" placeholder="Uses album title if left blank"></label>
 <button id="confirm-track" type="button" class="secondary">Confirm tags</button>
 <button id="export-track" type="button">Export selected track</button>
+<p id="long-track-warning" class="hint" hidden></p>
+<button id="recover-splits" type="button" class="secondary" hidden>Add suggested starts within this track</button>
 <details><summary>Optional AcoustID fingerprint lookup</summary>
 <p>Only the selected track's acoustic fingerprint and duration are sent to AcoustID. The WAV is not uploaded. This lookup is for non-commercial use under AcoustID's service terms. Results are suggestions only; they do not edit tags, pin a release, or submit a listen.</p>
+<label id="fingerprint-sample-wrap" hidden>Excerpt to check
+<select id="fingerprint-sample"><option value="beginning">Beginning</option><option value="middle">Middle</option><option value="end">End</option></select></label>
 <label><input id="acoustid-consent" type="checkbox"> I want to send this fingerprint for a non-commercial lookup</label>
-<button id="fingerprint-track" type="button" class="secondary" disabled>Look up this track</button>
+<button id="fingerprint-track" type="button" class="secondary" disabled>Identify selected track</button>
+<button id="fingerprint-recheck" type="button" class="secondary" hidden>Recheck with AcoustID</button>
 <p id="fingerprint-result" role="status" aria-live="polite"></p><ul id="fingerprint-suggestions"></ul></details>
 <p id="editor-status" role="status"></p>
 </section>

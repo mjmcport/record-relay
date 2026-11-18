@@ -25,6 +25,8 @@ window.addEventListener("beforeunload", event => {
 
 const confirmed = new Set();
 const trackTags = new Map();
+const fingerprintCache = new Map();
+const fingerprintInFlight = new Map();
 
 function resetFingerprintConsent() {
   const consent = el("acoustid-consent");
@@ -239,10 +241,36 @@ function render() {
 function renderEditor() {
   const frame = selectedFrame;
   el("track-editor").hidden = !savedSide || !ready() || frame === undefined;
-  if (el("track-editor").hidden) return;
+  if (el("track-editor").hidden) {
+    el("long-track-warning").hidden = true;
+    el("recover-splits").hidden = true;
+    el("fingerprint-sample-wrap").hidden = true;
+    return;
+  }
   const index = points.indexOf(frame);
   const tags = trackTags.get(frame);
   el("editor-heading").textContent = "Track " + (index + 1);
+  const trackEnd = points[index + 1] ?? waveform.frames;
+  const trackSeconds = (trackEnd - frame) / waveform.sample_rate;
+  const unusuallyLong = trackSeconds >= 12 * 60;
+  el("long-track-warning").hidden = !unusuallyLong;
+  if (unusuallyLong) {
+    el("long-track-warning").textContent = `This segment is ${Math.floor(trackSeconds / 60)} minutes long. It may contain missed track starts. The original WAV is unchanged; listen through the segment and check waveform suggestions before exporting.`;
+  }
+  const recoveryStarts = (waveform.suggested_starts || []).filter(point =>
+    point >= frame + waveform.sample_rate * 2 && point < trackEnd - waveform.sample_rate * 2 &&
+    !points.includes(point)).slice(0, 20);
+  const recovery = el("recover-splits");
+  recovery.hidden = !recoveryStarts.length;
+  recovery.textContent = `Add ${recoveryStarts.length}${recoveryStarts.length === 20 ? "+" : ""} suggested start${recoveryStarts.length === 1 ? "" : "s"} within this track`;
+  recovery.onclick = () => {
+    points = [...new Set([...points, ...recoveryStarts])].sort((a, b) => a - b);
+    dirty();
+    render();
+    el("editor-status").textContent = "Waveform-based starts were added as unconfirmed markers. Listen around each one and adjust or remove it before exporting.";
+  };
+  el("fingerprint-sample-wrap").hidden = trackSeconds <= 120;
+  if (trackSeconds <= 120) el("fingerprint-sample").value = "beginning";
   for (const key of ["title", "artist", "album"]) {
     const field = el("track-" + key);
     field.value = tags[key] || "";
@@ -295,61 +323,96 @@ function renderEditor() {
       el("export-track").disabled = false;
     }
   };
-  el("fingerprint-track").onclick = async () => {
-    const button = el("fingerprint-track");
-    const interval = trackExportOptions(frame, index);
-    button.disabled = true;
-    el("fingerprint-result").textContent = "Creating a fingerprint for the reviewed interval…";
-    el("fingerprint-suggestions").replaceChildren();
+  el("fingerprint-track").onclick = () => lookupFingerprint(frame, index, false);
+  el("fingerprint-recheck").onclick = () => lookupFingerprint(frame, index, true);
+}
+
+function fingerprintKey(frame, end, sample) {
+  return `${savedSide}\0${waveform.frames}\0${waveform.sample_rate}\0${frame}\0${end}\0${sample}`;
+}
+
+function showFingerprintResult(result, frame, key, cached = false) {
+  if (selectedFrame !== frame) return;
+  const target = el("fingerprint-suggestions");
+  target.replaceChildren();
+  const candidates = result.matches.flatMap(match =>
+    match.recordings.map(recording => ({...recording, score: match.score})));
+  const sampleDuration = Number.isInteger(result.sample_duration_seconds)
+    ? result.sample_duration_seconds : Math.min(120, result.duration_seconds || 0);
+  const samplePosition = result.sample_position || "beginning";
+  const sampled = `${cached ? "Cached result; no new request sent. " : ""}Checked ${sampleDuration}s from the ${samplePosition} of this segment; full segment duration sent: ${result.duration_seconds}s.`;
+  el("fingerprint-result").textContent = candidates.length
+    ? `AcoustID returned ${candidates.length} possible match${candidates.length === 1 ? "" : "es"}. ${sampled} Suggestions do not change tags.`
+    : `No AcoustID match was found. ${sampled} Nothing was changed.`;
+  for (const candidate of candidates) {
+    const row = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = candidate.title + (candidate.artist ? " · " + candidate.artist : "") +
+      " · " + Math.round(candidate.score * 100) + "%";
+    row.append(label);
+    if (candidate.artist) {
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = "secondary";
+      use.textContent = "Fill blank title and artist";
+      use.onclick = () => {
+        const tags = trackTags.get(frame) || {};
+        const titleField = el("track-title"), artistField = el("track-artist");
+        const fillTitle = !String(tags.title || "").trim();
+        const fillArtist = !String(tags.artist || "").trim();
+        if (fillTitle) { tags.title = candidate.title; titleField.value = candidate.title; }
+        if (fillArtist) { tags.artist = candidate.artist; artistField.value = candidate.artist; }
+        trackTags.set(frame, tags);
+        if (fillTitle || fillArtist) { confirmed.delete(frame); dirty(); }
+        el("editor-status").textContent = fillTitle || fillArtist
+          ? "Suggestions filled only into blank fields. Existing manual values were kept; review and confirm tags yourself."
+          : "Both fields already contain values, so your manual tags were kept unchanged.";
+      };
+      row.append(use);
+    }
+    target.append(row);
+  }
+  el("fingerprint-recheck").hidden = !fingerprintCache.has(key);
+}
+
+async function lookupFingerprint(frame, index, force) {
+  const button = el("fingerprint-track");
+  const recheck = el("fingerprint-recheck");
+  const interval = trackExportOptions(frame, index);
+  const sample = el("fingerprint-sample").value;
+  const key = fingerprintKey(frame, points[index + 1] ?? waveform.frames, sample);
+  if (!force && fingerprintCache.has(key)) {
+    showFingerprintResult(fingerprintCache.get(key), frame, key, true);
+    return;
+  }
+  if (fingerprintInFlight.has(key)) return fingerprintInFlight.get(key);
+  button.disabled = recheck.disabled = true;
+  const range = (interval.end - interval.start) / waveform.sample_rate;
+  const excerptText = range > 120 ? `the ${sample} 120-second excerpt of this ${Math.floor(range / 60)}-minute segment` : "the reviewed segment";
+  el("fingerprint-result").textContent = `Creating a local fingerprint for ${excerptText} and querying AcoustID… The WAV is not uploaded.`;
+  el("fingerprint-suggestions").replaceChildren();
+  const operation = (async () => {
     try {
       const response = await sideRequest("fingerprint", {
         name: savedSide, start: interval.start, end: interval.end,
-        noncommercial_ack: el("acoustid-consent").checked,
+        sample_position: sample, noncommercial_ack: el("acoustid-consent").checked,
       });
       const result = await response.json();
-      if (selectedFrame !== frame) return;
-      const target = el("fingerprint-suggestions");
-      target.replaceChildren();
-      const candidates = result.matches.flatMap(match =>
-        match.recordings.map(recording => ({...recording, score: match.score})));
-      if (!candidates.length) {
-        el("fingerprint-result").textContent = "No AcoustID match was found. Nothing was changed.";
-      } else {
-        el("fingerprint-result").textContent = `AcoustID returned ${candidates.length} suggestions below. Choose one to fill editable fields, then confirm tags yourself.`;
-        for (const candidate of candidates) {
-          const row = document.createElement("li");
-          const label = document.createElement("span");
-          label.textContent = candidate.title + (candidate.artist ? " · " + candidate.artist : "") +
-            " · " + Math.round(candidate.score * 100) + "%";
-          row.append(label);
-          if (candidate.artist) {
-            const use = document.createElement("button");
-            use.type = "button";
-            use.className = "secondary";
-            use.textContent = "Use as track suggestions";
-            use.onclick = () => {
-              tags.title = candidate.title;
-              tags.artist = candidate.artist;
-              confirmed.delete(frame);
-              trackTags.set(frame, tags);
-              el("track-title").value = candidate.title;
-              el("track-artist").value = candidate.artist;
-              dirty();
-              el("editor-status").textContent =
-                "Suggestions filled. Review them and use Confirm tags to accept.";
-            };
-            row.append(use);
-          }
-          target.append(row);
-        }
-      }
+      fingerprintCache.set(key, result);
+      showFingerprintResult(result, frame, key);
     } catch (error) {
-      el("fingerprint-result").textContent = error.message;
-      el("fingerprint-suggestions").replaceChildren();
+      if (selectedFrame === frame) {
+        el("fingerprint-result").textContent = `AcoustID lookup failed: ${error.message}. Your audio and tags were not changed.`;
+        el("fingerprint-suggestions").replaceChildren();
+      }
     } finally {
+      fingerprintInFlight.delete(key);
       button.disabled = !el("acoustid-consent").checked;
+      recheck.disabled = false;
     }
-  };
+  })();
+  fingerprintInFlight.set(key, operation);
+  return operation;
 }
 
 function reset() {
@@ -527,8 +590,16 @@ el("cover").onchange = () => {
 };
 el("acoustid-consent").addEventListener("change", event => {
   el("fingerprint-track").disabled = !event.target.checked;
-  el("fingerprint-result").textContent = "";
+  if (!event.target.checked) {
+    el("fingerprint-result").textContent = "";
+    el("fingerprint-suggestions").replaceChildren();
+    el("fingerprint-recheck").hidden = true;
+  }
+});
+el("fingerprint-sample").addEventListener("change", () => {
+  el("fingerprint-result").textContent = "Excerpt changed. Choose Identify selected track to check it.";
   el("fingerprint-suggestions").replaceChildren();
+  el("fingerprint-recheck").hidden = true;
 });
 el("remove-cover").onclick = () => {
   restoredCover = undefined;
