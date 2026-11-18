@@ -31,7 +31,7 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(source.recorded, 14400)
             with wave.open(str(Path(folder) / "side.wav"), "rb") as recorded:
                 self.assertEqual(recorded.readframes(14400), audio[:14400 * 4])
-            self.assertFalse(session.lookup_if_due(self.fail))
+            self.assertFalse(session.lookup_if_due(lambda _: self.fail("Unexpected lookup")))
             session.set_identify(True)
 
             def recognize(sample):
@@ -41,7 +41,7 @@ class SessionTests(unittest.TestCase):
 
             self.assertTrue(session.lookup_if_due(recognize))
             self.assertEqual(session.status()["track"], {"title": "Synthetic song"})
-            self.assertFalse(session.lookup_if_due(self.fail))
+            self.assertFalse(session.lookup_if_due(lambda _: self.fail("Unexpected lookup")))
 
     def test_disabling_identify_discards_an_in_flight_result(self):
         with TemporaryDirectory() as folder:
@@ -89,7 +89,7 @@ class SessionTests(unittest.TestCase):
             audio(quiet, 1)
             self.assertIsNone(session.status()["track"])
             audio(second, 8)
-            self.assertFalse(session.lookup_if_due(self.fail))
+            self.assertFalse(session.lookup_if_due(lambda _: self.fail("Unexpected lookup")))
             audio(second, 2)
 
             def check_new_audio(sample):
@@ -100,10 +100,10 @@ class SessionTests(unittest.TestCase):
 
             self.assertFalse(session.lookup_if_due(check_new_audio))
             self.assertIsNone(session.status()["track"])
-            now[0] = 184
+            now[0] = 84
             audio(second, 12)
-            self.assertFalse(session.lookup_if_due(self.fail))
-            now[0] = 185
+            self.assertFalse(session.lookup_if_due(lambda _: self.fail("Unexpected lookup")))
+            now[0] = 85
             audio(second, .1)
             self.assertTrue(session.lookup_if_due(lambda _: {"title": "Second"}))
             self.assertEqual(session.status()["track"], {"title": "Second"})
@@ -117,7 +117,7 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(session.lookup_if_due(lambda _: {"title": "First"}))
             now[0] = 179
             session.run(io.BytesIO(b"efgh" * 576000), io.BytesIO())
-            self.assertFalse(session.lookup_if_due(self.fail))
+            self.assertFalse(session.lookup_if_due(lambda _: self.fail("Unexpected lookup")))
             now[0] = 180
             session.run(io.BytesIO(b"efgh" * 4800), io.BytesIO())
             self.assertTrue(session.lookup_if_due(lambda _: {"title": "Second"}))

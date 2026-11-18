@@ -70,6 +70,17 @@ async function update(data) {
       progress?.required_seconds ? Math.min(progress.seconds, progress.required_seconds) +
         " of " + progress.required_seconds + " verified listening seconds" :
       "Waiting for a recognized track and verified playback.";
+    const reason = state.recognition_timing?.waiting_for;
+    if (state.identify && !state.track) {
+      const labels = {
+        quiet: "Waiting for audio.", fresh_audio: "Collecting fresh audio.",
+        lookup_in_progress: "Identifying the track…", short_retry: "No match yet. A retry is queued.",
+        backoff: "Waiting to retry recognition.", provider_backoff: "Recognition provider asked us to wait.",
+        hourly_budget: "Hourly recognition limit reached.", gap_budget: "Waiting for the recent-gap request limit.",
+        periodic_check: "Waiting for a gap or the next periodic check."
+      };
+      el("track").textContent = labels[reason] || "No track identified.";
+    }
     el("recording").textContent = "Recording: " + state.recording;
     if (state.scrobble_error) el("message").textContent = "Playback verification or scrobble failed.";
     if (state.recognition_error) el("message").textContent = "Recognition request failed.";

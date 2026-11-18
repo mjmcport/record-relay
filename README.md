@@ -367,3 +367,11 @@ its private subnet. Normal defaults are loopback-only. The LAN panel trusts
 devices on the configured subnet, so use it on a household network without
 public port forwarding. Browser writes require the panel origin and a fresh
 control token.
+
+When a confirmed gap's first lookup returns no match, Record Relay can retry
+once after 20 seconds of additional audio. That retry uses the same per-minute
+and hourly request budgets as the initial lookup. Further misses and provider
+errors use the existing backoff. The panel shows whether it is gathering
+audio, waiting on a retry, or blocked by a request budget. The local diagnostics
+contain only timing, counts, and outcomes. They do not retain audio, fingerprints,
+track names, or credentials in diagnostic logs.

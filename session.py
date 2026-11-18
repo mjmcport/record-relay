@@ -129,11 +129,13 @@ class Session:
             sample_frame = max(0, recorder.offered_frames - frames) if recorder else 0
         result = None
         retry_after = 0
+        failed = False
         started = clock()
         try:
             result = recognize(self.recent.wav_snapshot(frames=frames))
             return bool(result)
         except Exception as error:
+            failed = True
             if getattr(error, "status", getattr(error, "code", None)) == 429:
                 headers = getattr(error, "headers", None) or {}
                 value = headers.get("Retry-After", "")
@@ -143,7 +145,7 @@ class Session:
             with self.lock:
                 finished = clock()
                 self.last_recognition_duration = max(0, finished - started)
-                self.gate.complete(finished, matched=bool(result), retry_after=retry_after)
+                self.gate.complete(finished, matched=bool(result), retry_after=retry_after, failed=failed)
                 if self.identify and self.recognition_epoch == epoch and result:
                     self.track = result
                     self.track_seen = self.clock()
@@ -170,6 +172,13 @@ class Session:
                         "seconds_since_boundary": None if self.last_boundary is None else
                         round(now - self.last_boundary, 2),
                         "last_lookup_seconds": self.last_recognition_duration,
+                        "last_trigger": self.gate.last_trigger,
+                        "last_outcome": self.gate.last_outcome,
+                        "waiting_for": self.gate.waiting_for if self.identify else "disabled",
+                        "attempts_this_hour": sum(stamp > now - 3600 for stamp in self.gate.attempts),
+                        "gap_attempts_this_minute": sum(
+                            stamp > now - self.gate.boundary_window for stamp in self.gate.boundary_attempts),
+
                     }}
 
     def run(self, source, playback):
