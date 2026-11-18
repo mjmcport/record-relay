@@ -24,10 +24,31 @@ canvas{background:#29232b;border:1px solid var(--line);height:clamp(110px,20vw,1
 ol{margin-block:1.2rem;padding-left:1.35rem}
 li{padding:.9rem 0;border-top:1px solid var(--line)}
 li strong{font-family:Georgia,serif;font-size:1.2rem}
+#buffer-panel{background:var(--surface);border:1px solid var(--line);padding:1rem;margin:0 0 1.65rem}
+.available-audio{font-size:clamp(1.15rem,4vw,1.7rem);margin:.35rem 0;font-weight:650}
 [hidden]{display:none!important}
 </style>
 <main>
 <h1>Record Relay</h1>
+
+<section aria-labelledby="record-heading">
+<h2 id="record-heading">Record a side</h2>
+<section id="buffer-panel" hidden aria-labelledby="buffer-heading">
+<h3 id="buffer-heading">Recent turntable audio</h3>
+<p id="buffer-status" class="available-audio"></p>
+<p>Up to 10 minutes in memory. Older audio is replaced. The buffer expires after 10 minutes of silence or a restart.</p>
+<button type="button" id="save-buffer">Save buffered audio and keep recording</button>
+</section>
+<form>
+<label>Filename <input id="name" placeholder="Side name.wav" required></label>
+<label>Maximum minutes <input id="limit" value="30" type="number" min="1" max="60" required></label>
+<button id="start-recording">Start recording</button>
+<button type="button" id="stop" hidden>Stop recording</button>
+</form>
+<p id="recording"></p>
+
+</section>
+<p id="message" role="status"></p>
 <section aria-labelledby="identify-heading">
 <h2 id="identify-heading">Track identification</h2>
 <label><input type="checkbox" id="identify"> Identify tracks</label>
@@ -36,23 +57,6 @@ li strong{font-family:Georgia,serif;font-size:1.2rem}
 <p id="track">Waiting for session status.</p>
 <p id="scrobble-progress" hidden></p>
 </section>
-<section aria-labelledby="record-heading">
-<h2 id="record-heading">Record a side</h2>
-<form>
-<label>Filename <input id="name" placeholder="Side name.wav" required></label>
-<label>Maximum minutes <input id="limit" value="30" type="number" min="1" max="60" required></label>
-<button id="start-recording">Start recording</button>
-<button type="button" id="stop" hidden>Stop recording</button>
-</form>
-<p id="recording"></p>
-<section id="buffer-panel" hidden aria-labelledby="buffer-heading">
-<h3 id="buffer-heading">Recent turntable audio</h3>
-<p id="buffer-status"></p>
-<p>Up to 10 minutes in memory. Older audio is replaced. The buffer expires after 10 minutes of silence or a restart.</p>
-<button type="button" id="save-buffer">Save buffered audio and keep recording</button>
-</section>
-</section>
-<p id="message" role="status"></p>
 <p>__RECORDINGS_LINK__<a href="/review/">Review track splits</a></p>
 </main>
 <script>
@@ -78,7 +82,9 @@ async function update(data) {
     if (data.action !== "status") {
       const result = await request(data);
       el("message").textContent = result.recorded_frames === undefined ? "" :
-        "Saved " + result.recorded_frames + " frames.";
+        "Saved " + Math.floor(result.recorded_frames / 2880000) + ":" +
+        String(Math.floor(result.recorded_frames / 48000) % 60).padStart(2, "0") +
+        " to Saved recordings.";
     }
     const state = await request({action:"status"});
     el("buffer-panel").hidden = state.buffered_seconds === undefined;
