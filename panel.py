@@ -17,7 +17,14 @@ def forward(path, packet):
 def panel_handler(path, port):
     address = f"127.0.0.1:{port}"
     token = secrets.token_urlsafe(32)
-    html = Path(__file__).with_name("panel.html").read_text().replace("__CONTROL_TOKEN__", token)
+    directory = Path(__file__).parent
+    html = (directory / "panel.html").read_text().replace("__CONTROL_TOKEN__", token)
+    pages = {
+        "/": ("text/html; charset=utf-8", html.encode()),
+        "/review/": ("text/html; charset=utf-8", (directory / "review/index.html").read_bytes()),
+        "/review/review.mjs": ("text/javascript; charset=utf-8", (directory / "review/review.mjs").read_bytes()),
+        "/review/splits.mjs": ("text/javascript; charset=utf-8", (directory / "review/splits.mjs").read_bytes()),
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def send_body(self, status, content_type, content):
@@ -30,10 +37,10 @@ def panel_handler(path, port):
             self.wfile.write(content)
 
         def do_GET(self):
-            if self.path != "/" or self.headers.get("Host") != address:
+            if self.path not in pages or self.headers.get("Host") != address:
                 self.send_error(404)
                 return
-            self.send_body(200, "text/html; charset=utf-8", html.encode())
+            self.send_body(200, *pages[self.path])
 
         def do_POST(self):
             if (self.path != "/control" or self.headers.get("Host") != address

@@ -1,6 +1,6 @@
 # Record Relay
 
-An offline prototype for reviewing likely track boundaries in a digitized record side. It reads a local 16-bit stereo PCM WAV and prints candidate starts. Playback, recognition services and the capture device are outside this prototype.
+Record Relay captures turntable audio, sends it to a private monitor for Sendspin, and can save a lossless side recording on demand. Its browser tools let you control recording and review likely track boundaries. Recognition and scrobbling are optional and start disabled.
 
 ```sh
 python3 relay.py side-a.wav --minimum-gap 0.8 --threshold-db -45
@@ -96,7 +96,7 @@ Run `python3 waveform.py side-a.wav --columns 1000` to produce compact JSON with
 ### Review splits in a browser
 
 1. Generate waveform JSON with `python3 waveform.py side-a.wav > side-a.json`.
-2. Run `python3 -m http.server 8765 --bind 127.0.0.1` from this repository and open `http://127.0.0.1:8765/review/`.
+2. Choose **Review track splits** in the control panel. You can also run `python3 -m http.server 8765 --bind 127.0.0.1` from this repository and open `http://127.0.0.1:8765/review/`.
 3. Select your WAV and its matching JSON. Listen or type a time in seconds, save each track start, and adjust or remove it as needed. Add a start at zero if you want the lead-in included.
 4. Download the split plan. Its start and end values are sample frames ready for the FLAC export command. Files stay local to the browser. Matching duration is a sanity check, so select the JSON generated from the actual WAV.
 
@@ -109,7 +109,7 @@ The review workflow passed an isolated Chrome test at 390 and 1280 pixels wide u
 ### Optional provider and recording pilots
 
 - `recording.py side-a.wav --record --maximum-seconds 1800` writes a lossless WAV master from explicitly supplied native PCM on stdin. The session stops at EOF or the requested cap. Empty and partial-frame sessions fail before publication. It does not open an audio device. The output filesystem must support hard links.
-- `providers.recognize_audd` is an optional adapter for [AudD](https://docs.audd.io/). It sends a bounded WAV excerpt only when enabled. AudD needs its own credential and consent to send a sample. The project does not yet provide a Shazam adapter or a live scheduler wiring the request gate to a provider.
+- `providers.recognize_audd` is an optional adapter for [AudD](https://docs.audd.io/). It sends a bounded WAV excerpt only when enabled. AudD needs its own credential and consent to send a sample. An optional Shazam adapter uses ShazamIO. Both recognition providers use the same scheduler and request gate.
 - `providers.send_listen` implements [ListenBrainz single-listen submission](https://listenbrainz.readthedocs.io/en/latest/users/json.html). Use it behind `submission.submit_once` with a private receipt database. The adapter has been exercised with simulated transport only.
 - `providers.cover_candidates` accepts a chosen MusicBrainz release ID and lists approved front artwork from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API). Release search, previews, and embedding are separate steps still to be integrated.
 
@@ -123,7 +123,7 @@ Add `--cover selected.jpg` (or a local PNG) to `export_track.py` to embed review
 
 ### Recognition provider choices
 
-The audio buffer and lookup policy are provider-independent. The earlier Shazam prototype remains a reference. Apple's supported [ShazamKit](https://developer.apple.com/shazamkit/) lists macOS and Android among its platforms but does not list Raspberry Pi Linux. An official Shazam route could use a separately authorized Mac companion, subject to Apple's entitlement requirements and end-to-end testing. This repository does not depend on an unofficial Shazam endpoint.
+The audio buffer and lookup policy are provider-independent. The earlier Shazam prototype remains a reference. Apple's supported [ShazamKit](https://developer.apple.com/shazamkit/) lists macOS and Android among its platforms but does not list Raspberry Pi Linux. An official Shazam route could use a separately authorized Mac companion, subject to Apple's entitlement requirements and end-to-end testing. For an optional Linux pilot, install `shazamio==0.9.0` in the Python environment running Record Relay and start the PCM session with `--shazam`. [ShazamIO](https://github.com/shazamio/ShazamIO) uses an unofficial Shazam API. The dependency is optional and the service remains offline until Identify is enabled. A lookup uses 10–12 seconds of PCM in memory, and the provider computes an acoustic signature. Turn Identify off when the session ends. Do not enable it for a source whose listeners have not agreed to recognition.
 
 [AudD](https://audd.io/pricing/) is the headless-compatible HTTP alternative. It needs an API token and sends a short audio excerpt when enabled. Its published entry tier is \$5/month for 1,000 requests, and a 300-request trial is listed where available. No account or subscription has been created. Set a provider-side hard cap if piloting it. The repository currently tests simulated calls only.
 

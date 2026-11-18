@@ -1,4 +1,5 @@
 """Opt-in network adapters. Importing this module never makes a request."""
+import asyncio
 import io
 import json
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
@@ -19,12 +20,7 @@ def request_json(request, transport):
         return json.loads(response.read(256_000))
 
 
-def recognize_audd(sample, token, *, enabled=False, transport=authenticated_open):
-    """Send at most 12 seconds of native PCM to AudD when explicitly enabled."""
-    if not enabled:
-        return None
-    if not token or not token.isalnum():
-        raise ValueError("An AudD token is required")
+def validate_sample(sample):
     if len(sample) > 12 * 48000 * 4 + 4096:
         raise ValueError("Recognition sample is too large")
     with wave.open(io.BytesIO(sample), "rb") as reader:
@@ -32,6 +28,53 @@ def recognize_audd(sample, token, *, enabled=False, transport=authenticated_open
             raise ValueError("Expected 48 kHz, 16-bit stereo")
         if not 48000 * 10 <= reader.getnframes() <= 48000 * 12:
             raise ValueError("Use a sample between 10 and 12 seconds")
+
+
+def shazam_metadata(response):
+    """Extract metadata for a genuine recognition match."""
+    if not isinstance(response, dict):
+        raise ValueError("Unexpected Shazam response")
+    track = response.get("track")
+    if not response.get("matches") or not isinstance(track, dict):
+        return None
+    artist, title = track.get("subtitle"), track.get("title")
+    if not all(isinstance(value, str) and value.strip() for value in (artist, title)):
+        return None
+    result = {"artist": artist.strip(), "title": title.strip()}
+    for section in track.get("sections") or []:
+        if not isinstance(section, dict) or section.get("type") != "SONG":
+            continue
+        for item in section.get("metadata") or []:
+            if isinstance(item, dict) and item.get("title") == "Album":
+                album = item.get("text")
+                if isinstance(album, str) and album.strip():
+                    result["album"] = album.strip()
+                    return result
+    return result
+
+
+def shazam_recognizer():
+    """Construct the optional ShazamIO provider without opening a connection."""
+    from shazamio import Shazam
+
+    async def lookup(sample):
+        async with Shazam() as client:
+            return await client.recognize(sample)
+
+    def recognize(sample):
+        validate_sample(sample)
+        return shazam_metadata(asyncio.run(asyncio.wait_for(lookup(sample), timeout=10)))
+
+    return recognize
+
+
+def recognize_audd(sample, token, *, enabled=False, transport=authenticated_open):
+    """Send at most 12 seconds of native PCM to AudD when explicitly enabled."""
+    if not enabled:
+        return None
+    if not token or not token.isalnum():
+        raise ValueError("An AudD token is required")
+    validate_sample(sample)
     boundary = uuid4().hex
     body = (
         f'--{boundary}\r\nContent-Disposition: form-data; name="api_token"\r\n\r\n{token}\r\n'

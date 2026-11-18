@@ -10,7 +10,7 @@ from time import time
 from threading import Thread
 
 from session import Session
-from providers import authenticated_open, recognize_audd
+from providers import authenticated_open, recognize_audd, shazam_recognizer
 from worker import RecognitionWorker, ScrobbleDelivery
 from music_assistant import MusicAssistantObserver, ScrobbleMonitor
 from receipts import ReceiptStore
@@ -35,6 +35,11 @@ def serve(args):
     token = private_text(args.audd_token_file).strip() if args.audd_token_file else None
     if token is not None and not token.isalnum():
         raise ValueError("Invalid AudD token file")
+    recognizer = None
+    if token is not None:
+        recognizer = lambda sample: recognize_audd(sample, token, enabled=True)
+    elif args.shazam:
+        recognizer = shazam_recognizer()
     recognition_worker = scrobble_worker = None
     monitor = None
     if args.scrobble_config:
@@ -56,7 +61,7 @@ def serve(args):
                 if action == "identify":
                     if type(data["enabled"]) is not bool:
                         raise ValueError("Identify expects a boolean")
-                    if data["enabled"] and token is None:
+                    if data["enabled"] and recognizer is None:
                         raise ValueError("Start the session with a configured recognition provider")
                     session.set_identify(data["enabled"])
                 elif action == "scrobble":
@@ -83,10 +88,9 @@ def serve(args):
             self.wfile.write(json.dumps(result).encode() + b"\n")
 
     with UnixStreamServer(str(args.socket), Handler) as server:
-        if token is not None:
+        if recognizer is not None:
             recognition_worker = RecognitionWorker(
-                lambda: session.lookup_if_due(
-                    lambda sample: recognize_audd(sample, token, enabled=True)),
+                lambda: session.lookup_if_due(recognizer),
                 lambda: session.status()["identify"],
             )
         if monitor is not None:
@@ -116,7 +120,9 @@ def main():
     start = modes.add_parser("serve")
     start.add_argument("socket", type=Path)
     start.add_argument("library", type=Path)
-    start.add_argument("--audd-token-file", type=Path)
+    providers = start.add_mutually_exclusive_group()
+    providers.add_argument("--audd-token-file", type=Path)
+    providers.add_argument("--shazam", action="store_true")
     start.add_argument("--scrobble-config", type=Path)
     control = modes.add_parser("control")
     control.add_argument("socket", type=Path)
