@@ -140,3 +140,21 @@ class SessionTests(unittest.TestCase):
             session.set_identify(False)
             self.assertFalse(session.status()["local_listening"])
             self.assertFalse(session.status()["scrobble"])
+
+    def test_recording_saves_recognition_cue_separately_from_master(self):
+        import json
+        with TemporaryDirectory() as folder:
+            session = Session(folder)
+            session.set_identify(True)
+            pcm = b"abcd" * 48000
+            session.run(io.BytesIO(pcm * 12), io.BytesIO())
+            session.start_recording("tagged.wav")
+            session.run(io.BytesIO(pcm), io.BytesIO())
+            self.assertTrue(session.lookup_if_due(lambda _: {
+                "title": "Fixture", "artist": "Artist", "private": "discard"
+            }))
+            self.assertEqual(session.stop_recording(), 48000)
+            cues = json.loads((Path(folder) / "tagged.matches.json").read_text())
+            self.assertEqual(cues, [{"frame": 0, "tags": {"title": "Fixture", "artist": "Artist"}}])
+            with wave.open(str(Path(folder) / "tagged.wav"), "rb") as master:
+                self.assertEqual(master.readframes(48000), pcm)
