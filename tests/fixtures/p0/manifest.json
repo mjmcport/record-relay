@@ -1,0 +1,21 @@
+{
+  "fixture_version": 1,
+  "description": "Synthetic, deterministic P0 fixtures; no real media or service data.",
+  "scenarios": {
+    "album_compilation_ab": "album_compilation_ab.json",
+    "standalone_no_services": "standalone_no_services.json",
+    "missing_optional_ma": "missing_optional_ma.json",
+    "two_tabs_conflict": "two_tabs_conflict.json",
+    "legacy_draft": "legacy_draft.json",
+    "legacy_snapshot": "legacy_snapshot.json",
+    "capture_snapshot_v1": "capture_snapshot_v1.json",
+    "idempotency_v1": "idempotency_v1.json",
+    "legacy_binary": "legacy_binary.json"
+  },
+  "assets": {
+    "pcm": "stereo-impulses-silence.s16le",
+    "pcm_format": "s16le/stereo/48000",
+    "cover": "synthetic-cover.png",
+    "legacy_draft": "legacy_draft.json"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "python": "3.14.8",
+  "node": "26.11.1",
+  "python_test_dependencies": [],
+  "javascript_test_dependencies": [],
+  "python_test_command": "python3 -m unittest discover -s tests",
+  "javascript_test_command": "node --test tests/review.test.mjs"
+}

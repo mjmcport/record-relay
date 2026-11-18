@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "replay_same_payload": {
+    "command": {
+      "schema_version": 1,
+      "request_id": "6f412f5b-a9a6-4fc4-a6c7-60d7c98580a1",
+      "action": "stop",
+      "expected": {
+        "project_id": "project-compilation-01",
+        "take_id": "take-b-01",
+        "capture_generation": "capture-g-12"
+      },
+      "payload": {}
+    },
+    "expected_receipt": {
+      "schema_version": 1,
+      "request_id": "6f412f5b-a9a6-4fc4-a6c7-60d7c98580a1",
+      "request_digest": "sha256:fixture-stop-take-b",
+      "state": "succeeded",
+      "receipt_id": "receipt-001",
+      "result": {
+        "published_frames": 144000
+      },
+      "error": null
+    }
+  },
+  "reused_id_different_payload": {
+    "request_id": "6f412f5b-a9a6-4fc4-a6c7-60d7c98580a1",
+    "different_payload": {
+      "name": "different.wav"
+    },
+    "expected_state": "conflict"
+  }
+}

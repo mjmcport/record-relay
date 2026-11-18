@@ -1,0 +1,31 @@
+{
+  "frames": 96000,
+  "sample_rate": 48000,
+  "points": [
+    0,
+    48000
+  ],
+  "tags": [
+    [
+      0,
+      {
+        "title": "Fixture track",
+        "artist": "Fixture performer"
+      }
+    ],
+    [
+      48000,
+      {
+        "title": "Second track"
+      }
+    ]
+  ],
+  "confirmed": [
+    0
+  ],
+  "artist": "Fixture album artist",
+  "album": "Fixture pressing",
+  "format": "flac",
+  "cover": null,
+  "selected": 0
+}

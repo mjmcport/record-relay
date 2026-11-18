@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snapshot-0001",
+  "observed_at": "2026-11-18T09:30:00Z",
+  "snapshot_age_ms": 0,
+  "capabilities": {
+    "capture": true,
+    "buffer": true,
+    "identify": false,
+    "music_assistant": false,
+    "listenbrainz": false
+  },
+  "project_id": "project-compilation-01",
+  "take_id": "take-b-01",
+  "capture_generation": "capture-g-12",
+  "boot_generation": "boot-g-03",
+  "side": "B",
+  "state": "recording",
+  "sample_rate": 48000,
+  "included_prefix_frames": 2400,
+  "accepted_frames": 144000,
+  "published_frames": null,
+  "limit_frames": 86400000,
+  "ring": {
+    "generation": "ring-g-12",
+    "oldest_frame": 110000,
+    "newest_frame": 144000
+  },
+  "latest_operation": {
+    "request_id": "6f412f5b-a9a6-4fc4-a6c7-60d7c98580a1",
+    "state": "succeeded",
+    "receipt_id": "receipt-001"
+  },
+  "latest_error": null
+}

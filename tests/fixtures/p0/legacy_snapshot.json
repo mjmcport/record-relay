@@ -1,0 +1,28 @@
+{
+  "description": "Legacy flat Session.status projection remains readable.",
+  "status": {
+    "suggested_filename": null,
+    "buffered_seconds": 0.25,
+    "buffer_limit_seconds": 600,
+    "identify": false,
+    "scrobble": false,
+    "signal": true,
+    "recording": "recording",
+    "track": null,
+    "local_listening": false,
+    "track_epoch": 0,
+    "recognition_timing": {
+      "seconds_since_boundary": null,
+      "last_lookup_seconds": null,
+      "last_trigger": null,
+      "last_outcome": null,
+      "waiting_for": "disabled",
+      "attempts_this_hour": 0,
+      "gap_attempts_this_minute": 0
+    }
+  },
+  "assertions": [
+    "legacy_status_required_keys_unchanged",
+    "unknown_added_keys_ignored"
+  ]
+}

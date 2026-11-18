@@ -1,0 +1,43 @@
+{
+  "description": "Explicit physical A then B on a pinned compilation; track performer differs from album artist.",
+  "project_id": "project-compilation-01",
+  "release_id": "mb-release-example-01",
+  "album_artist": "Various Artists",
+  "takes": [
+    {
+      "take_id": "take-a-01",
+      "side": "A",
+      "recorded_date": "2026-11-18",
+      "state": "saved",
+      "tracks": [
+        {
+          "recording_id": "recording-a1",
+          "performer": "The Example Band",
+          "title": "Opening Song",
+          "side_position": "A1"
+        }
+      ],
+      "project_id": "project-compilation-01"
+    },
+    {
+      "take_id": "take-b-01",
+      "side": "B",
+      "recorded_date": "2026-11-18",
+      "state": "recording",
+      "tracks": [
+        {
+          "recording_id": "recording-b1",
+          "performer": "Guest Artist",
+          "title": "Other Song",
+          "side_position": "B1"
+        }
+      ],
+      "project_id": "project-compilation-01"
+    }
+  ],
+  "assertions": [
+    "side_is_operator_selected",
+    "track_performer_not_album_artist",
+    "two_takes_same_project"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Previously configured optional MA observer is unavailable while capture remains active.",
+  "music_assistant": {
+    "configured": true,
+    "available": false,
+    "error_code": "observer_unavailable"
+  },
+  "capture": {
+    "state": "recording",
+    "capture_generation": "capture-g-12"
+  },
+  "assertions": [
+    "ma_failure_does_not_end_capture",
+    "listening_evidence_unavailable"
+  ]
+}

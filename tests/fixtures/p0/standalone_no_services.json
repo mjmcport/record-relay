@@ -1,0 +1,22 @@
+{
+  "description": "Offline standalone boot with healthy silent PCM, local buffer and no MA or recognition config.",
+  "project_id": null,
+  "release_id": null,
+  "music_assistant": {
+    "configured": false,
+    "available": false
+  },
+  "recognition": {
+    "configured": false,
+    "available": false
+  },
+  "input": {
+    "connected": true,
+    "signal": false,
+    "fresh": true
+  },
+  "assertions": [
+    "silent_input_is_not_disconnected",
+    "capture_capability_independent_of_services"
+  ]
+}

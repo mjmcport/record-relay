@@ -1,0 +1,35 @@
+{
+  "description": "Two browser tabs edit the same revision; one wins and the other must see a conflict.",
+  "initial_revision": 4,
+  "commands": [
+    {
+      "schema_version": 1,
+      "request_id": "6f412f5b-a9a6-4fc4-a6c7-60d7c98580a1",
+      "action": "edit_project",
+      "expected": {
+        "project_id": "project-compilation-01",
+        "revision": 4
+      },
+      "payload": {
+        "album_title": "Edited in tab one"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "c57cffed-6bae-4292-a808-3058e3e1162c",
+      "action": "edit_project",
+      "expected": {
+        "project_id": "project-compilation-01",
+        "revision": 4
+      },
+      "payload": {
+        "album_title": "Edited in tab two"
+      }
+    }
+  ],
+  "assertions": [
+    "one_compare_and_swap_succeeds",
+    "other_returns_revision_5",
+    "losing_edit_not_applied"
+  ]
+}
