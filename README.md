@@ -182,3 +182,9 @@ The Pi deployment verified the real Behringer device opened through the relay, t
 ### Where recognized metadata appears
 
 Record Relay can show the recognized artist and title in its companion panel. Music Assistant 2.10.12's built-in Sendspin source provider initializes stream metadata with the source name and does not consume recognition events from this app. Native now-playing metadata needs a Music Assistant integration that updates the active stream's metadata without restarting it. Confirm that updates appear on the intended player before using them to drive scrobbling. [Sendspin source provider](https://github.com/music-assistant/server/blob/2.10.12/music_assistant/providers/sendspin_source/provider.py)
+
+### Download completed recordings
+
+Start the panel with `--library /path/to/recordings` to show **Download recordings**. Download a finished WAV to your Mac, then open it in **Review track splits**. The download streams directly to the browser and leaves the side master on the Pi. The panel stays on loopback and requires a same-origin form with the current panel token for each file transfer.
+
+A silent real-Pi pilot verified a short WAV from the Behringer input and a separate single Shazam fingerprint lookup from the private monitor. The lookup did not require sending the excerpt to a speaker or saving an additional recording. The continuous recognition scheduler has simulated tests and remains opt-in.
