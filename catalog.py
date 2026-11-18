@@ -19,6 +19,16 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Close SQLite handles used with ``with`` after its transaction ends."""
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            return super().__exit__(exc_type, exc, traceback)
+        finally:
+            self.close()
+
+
 class CatalogError(Exception):
     """Base class for catalog errors."""
 
@@ -46,6 +56,32 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def _validated_match_sidecar(path: Path, frames: int) -> bytes | None:
+    if path.is_symlink():
+        raise InvalidMaster("Recognition sidecar may not be a symbolic link")
+    if not path.exists():
+        return None
+    if not path.is_file() or path.stat().st_size > 512_000:
+        raise InvalidMaster("Recognition sidecar is not a bounded regular file")
+    try:
+        raw = path.read_bytes()
+        cues = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise InvalidMaster("Recognition sidecar is invalid") from exc
+    if not isinstance(cues, list) or len(cues) > 512:
+        raise InvalidMaster("Recognition sidecar has an invalid cue list")
+    for cue in cues:
+        if not isinstance(cue, dict):
+            raise InvalidMaster("Recognition sidecar contains an invalid cue")
+        tags = cue.get("tags")
+        if (type(cue.get("frame")) is not int or not 0 <= cue["frame"] < frames
+                or not isinstance(tags, dict) or not tags
+                or any(key not in {"title", "artist", "album"} or not isinstance(value, str)
+                       or len(value) > 300 or "\0" in value for key, value in tags.items())):
+            raise InvalidMaster("Recognition sidecar contains an invalid cue")
+    return raw
+
+
 def validate_wav(path: Path, expected_frames: int | None = None) -> dict:
     """Read WAV metadata and ensure its data chunk contains complete frames."""
     try:
@@ -54,6 +90,8 @@ def validate_wav(path: Path, expected_frames: int | None = None) -> dict:
                                                wav.getframerate(), wav.getnframes())
             if channels < 1 or width < 1 or rate < 1:
                 raise InvalidMaster("WAV has invalid audio parameters")
+            if frames < 1:
+                raise InvalidMaster("WAV contains no audio frames")
             if expected_frames is not None and frames != expected_frames:
                 raise InvalidMaster("WAV frame count does not match the closed writer")
             # Reading all frames catches a truncated data chunk before publication.
@@ -77,16 +115,29 @@ class Catalog:
     """Transactional catalog, independent of listens.sqlite."""
 
     def __init__(self, path: str | Path, library: str | Path):
-        self.path = Path(path)
+        requested_path = Path(path).expanduser()
+        if requested_path.is_symlink():
+            raise CatalogError("Catalog database may not be a symbolic link")
+        self.path = requested_path.resolve(strict=False)
         self.library = Path(library).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.library.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.path.parent, 0o700)
-        os.chmod(self.library, 0o700)
+        parent_info = self.path.parent.stat()
+        if parent_info.st_uid != os.getuid() or stat.S_IMODE(parent_info.st_mode) & 0o077:
+            raise CatalogError("Catalog state directory must be owned by this user and mode 0700")
+        library_info = self.library.stat()
+        if library_info.st_uid != os.getuid():
+            raise CatalogError("Audio library must be owned by this user")
+        if stat.S_IMODE(library_info.st_mode) & 0o077:
+            os.chmod(self.library, 0o700)
         self._migrate()
 
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        if self.path.is_symlink() or any(Path(str(self.path) + suffix).is_symlink()
+                                          for suffix in ("-wal", "-shm")):
+            raise CatalogError("Catalog database and SQLite sidecars may not be symbolic links")
+        db = sqlite3.connect(self.path, timeout=10, isolation_level=None,
+                             factory=_ClosingConnection)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA busy_timeout=10000")
@@ -174,11 +225,24 @@ class Catalog:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     def _relative(self, locator: str) -> Path:
+        if (not isinstance(locator, str) or not locator or "\\" in locator or "\0" in locator
+                or any(part in ("", ".", "..") for part in locator.split("/"))):
+            raise CatalogError("Locator must be a normalized relative path")
         candidate = Path(locator)
-        if candidate.is_absolute() or any(part in ("", ".", "..") for part in candidate.parts):
+        if candidate.is_absolute() or candidate.as_posix() != locator:
             raise CatalogError("Locator must be a normalized relative path")
         target = self.library.joinpath(candidate)
-        if target.resolve().parent != target.parent.resolve():
+        resolved_parent = target.parent.resolve()
+        try:
+            resolved_parent.relative_to(self.library)
+        except ValueError as exc:
+            raise CatalogError("Locator must stay inside the library") from exc
+        cursor = self.library
+        for part in candidate.parts[:-1]:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise CatalogError("Locator may not traverse symlinks")
+        if target.is_symlink():
             raise CatalogError("Locator may not traverse symlinks")
         return target
 
@@ -197,6 +261,27 @@ class Catalog:
             return None
         result = dict(row)
         result["metadata"] = json.loads(result["metadata"])
+        return result
+
+    def get_or_create_project(self, project_id: str, label: str = "") -> dict:
+        existing = self.get_project(project_id)
+        if existing:
+            return existing
+        try:
+            return self.create_project(label, project_id=project_id)
+        except sqlite3.IntegrityError:
+            return self.get_project(project_id)
+
+    def projects(self, *, limit=50):
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM projects ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item["metadata"])
+            result.append(item)
         return result
 
     def edit_project(self, project_id: str, expected_revision: int, *, label: str | None = None,
@@ -256,6 +341,43 @@ class Catalog:
             row = db.execute("SELECT * FROM intents WHERE request_id=?", (request_id,)).fetchone()
         return dict(row) if row else None
 
+    def close_take(self, request_id: str, *, expected_frames: int) -> dict:
+        """Record the writer's closed frame count before attempting publication."""
+        if type(expected_frames) is not int or expected_frames <= 0:
+            raise InvalidMaster("A saved side must contain complete audio frames")
+        with self.transaction() as db:
+            row = db.execute("SELECT take_id,state FROM intents WHERE request_id=?", (request_id,)).fetchone()
+            if not row:
+                raise KeyError(request_id)
+            if row["state"] == "closed":
+                current = db.execute("SELECT expected_frames FROM intents WHERE request_id=?", (request_id,)).fetchone()[0]
+                if current != expected_frames:
+                    raise Conflict("Closed writer frame count changed")
+                return self.get_intent(request_id)
+            if row["state"] != "writing":
+                raise Conflict("Recording intent is no longer writable")
+            db.execute("UPDATE intents SET state='closed',expected_frames=?,updated_at=? WHERE request_id=?",
+                       (expected_frames, self._now(), request_id))
+            db.execute("UPDATE takes SET state='finalizing' WHERE id=? AND state='recording'", (row["take_id"],))
+        return self.get_intent(request_id)
+
+    def fail_take(self, request_id: str, reason: str):
+        """Close a failed writer intent without presenting it as a saved master."""
+        reason = str(reason)[:300]
+        with self.transaction() as db:
+            row = db.execute("SELECT take_id,state FROM intents WHERE request_id=?", (request_id,)).fetchone()
+            if not row or row["state"] in ("committed", "failed", "quarantined", "interrupted"):
+                return
+            db.execute("UPDATE intents SET state='interrupted',error=?,updated_at=? WHERE request_id=?",
+                       (reason, self._now(), request_id))
+            db.execute("UPDATE takes SET state='interrupted' WHERE id=?", (row["take_id"],))
+
+    def quarantine_take(self, request_id: str, reason: str):
+        """Release a corrupt/ambiguous take from the active-side uniqueness guard."""
+        intent = self.get_intent(request_id)
+        if intent:
+            self._mark_quarantined(intent, str(reason))
+
     def publish_take(self, request_id: str, *, expected_frames: int | None = None) -> dict:
         """Verify closed staging WAV, durably publish without replacement, commit receipt."""
         intent = self.get_intent(request_id)
@@ -270,8 +392,22 @@ class Catalog:
         info = validate_wav(stage, expected_frames)
         with stage.open("rb") as stream:
             os.fsync(stream.fileno())
+        stage_matches = stage.with_suffix(".matches.json")
+        final_matches = final.with_suffix(".matches.json")
+        if final_matches.is_symlink():
+            raise Conflict("Published recognition sidecar may not be a symbolic link")
+        match_bytes = _validated_match_sidecar(stage_matches, info["frames"])
+        if final_matches.exists() and match_bytes is None:
+            raise Conflict("A recognition sidecar already occupies the publication locator")
+        if match_bytes is not None:
+            with stage_matches.open("rb") as stream:
+                os.fsync(stream.fileno())
         digest = sha256_file(stage)
         with self.transaction() as db:
+            if expected_frames is None:
+                expected_frames = intent.get("expected_frames")
+            if expected_frames is not None and expected_frames != info["frames"]:
+                raise InvalidMaster("WAV frame count does not match the closed writer")
             db.execute("UPDATE intents SET state='verified',expected_frames=?,updated_at=? WHERE request_id=? AND state IN ('writing','closed','verified')",
                        (info["frames"], self._now(), request_id))
         # Hard-link is an atomic, same-filesystem no-replace publication. Keep the
@@ -283,6 +419,13 @@ class Catalog:
                 raise Conflict("Published locator already contains different bytes") from exc
         dir_fd = os.open(final.parent, os.O_RDONLY)
         try:
+            if match_bytes is not None:
+                try:
+                    os.link(stage_matches, final_matches, follow_symlinks=False)
+                except FileExistsError as exc:
+                    if (not final_matches.is_file() or not os.path.samefile(stage_matches, final_matches)
+                            or final_matches.read_bytes() != match_bytes):
+                        raise Conflict("Published recognition sidecar contains different bytes") from exc
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
@@ -299,15 +442,34 @@ class Catalog:
             db.execute("UPDATE takes SET state='saved',locator=?,master_sha256=?,frames=?,sample_rate=?,channels=?,sample_width=?,published_at=? WHERE id=?",
                        (intent["intended_locator"], digest, info["frames"], info["sample_rate"],
                         info["channels"], info["sample_width"], now, intent["take_id"]))
+        # Once the durable catalog receipt exists, remove the redundant staging
+        # hard link. A crash before this cleanup leaves a harmless duplicate.
+        try:
+            if stage.is_file() and final.is_file() and os.path.samefile(stage, final):
+                stage.unlink()
+                if stage_matches.is_file() and final_matches.is_file() and os.path.samefile(stage_matches, final_matches):
+                    stage_matches.unlink()
+                dir_fd = os.open(final.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        except OSError:
+            pass
         return receipt
 
-    def reconcile(self) -> list[dict]:
+    def reconcile(self, *, live_request_ids=(), defer_unverified_writing=False) -> list[dict]:
         """Resolve crash gaps by stable intent identity; never claim partial WAVs saved."""
+        live_request_ids = set(live_request_ids)
         with self.connect() as db:
             rows = db.execute("SELECT * FROM intents WHERE state NOT IN ('committed','failed','quarantined','interrupted') ORDER BY created_at").fetchall()
         outcomes = []
         for row in rows:
             intent = dict(row)
+            if intent["request_id"] in live_request_ids:
+                continue
+            if defer_unverified_writing and intent["state"] == "writing":
+                continue
             stage, final = self._relative(intent["staging_locator"]), self._relative(intent["intended_locator"])
             if stage.is_symlink() or final.is_symlink():
                 self._mark_quarantined(intent, "staging_or_publication_path_is_symlink")
@@ -356,6 +518,50 @@ class Catalog:
         items = [dict(row) for row in rows[:limit]]
         return {"schema_version": 1, "items": items,
                 "next_cursor": items[-1]["created_at"] if len(rows) > limit and items else None}
+
+    def take_for_locator(self, locator: str):
+        self._relative(locator)
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM takes WHERE locator=?", (locator,)).fetchone()
+        return None if row is None else dict(row)
+
+    def save_review_draft(self, take_id: str, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("Review draft must be an object")
+        try:
+            encoded = _json(payload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Review draft contains unsupported data") from exc
+        if len(encoded.encode("utf-8")) > 8_100_000:
+            raise ValueError("Review draft exceeds the supported size")
+        with self.connect() as db:
+            take = db.execute("SELECT * FROM takes WHERE id=? AND state='saved'", (take_id,)).fetchone()
+        if not take or not take["locator"] or not take["master_sha256"]:
+            raise CatalogError("Review draft needs a saved, verified master")
+        source = self._relative(take["locator"])
+        if source.is_symlink() or not source.is_file() or sha256_file(source) != take["master_sha256"]:
+            raise Conflict("Master identity changed; reload before saving the review")
+        draft = dict(payload)
+        draft["master_sha256"] = take["master_sha256"]
+        encoded = _json(draft)
+        now, draft_id = self._now(), str(uuid.uuid4())
+        with self.transaction() as db:
+            db.execute("INSERT INTO drafts(id,take_id,master_sha256,source_locator,payload,imported_at) VALUES(?,?,?,?,?,?) ON CONFLICT(take_id,master_sha256) DO UPDATE SET payload=excluded.payload,source_locator=excluded.source_locator,imported_at=excluded.imported_at",
+                       (draft_id, take_id, take["master_sha256"], take["locator"], encoded, now))
+            row = db.execute("SELECT id FROM drafts WHERE take_id=? AND master_sha256=?",
+                             (take_id, take["master_sha256"])).fetchone()
+        return {"saved": True, "id": row[0], "master_sha256": take["master_sha256"]}
+
+    def load_review_draft(self, take_id: str) -> dict:
+        with self.connect() as db:
+            row = db.execute("SELECT d.*,t.locator,t.master_sha256 AS current_sha FROM drafts d JOIN takes t ON t.id=d.take_id WHERE d.take_id=? ORDER BY d.imported_at DESC LIMIT 1", (take_id,)).fetchone()
+        if not row:
+            return {}
+        source = self._relative(row["locator"])
+        if (row["current_sha"] != row["master_sha256"] or source.is_symlink()
+                or not source.is_file() or sha256_file(source) != row["master_sha256"]):
+            raise Conflict("Saved review belongs to different master bytes")
+        return json.loads(row["payload"])
 
     def import_legacy_wav(self, source: str | Path, *, project_id: str, side: str | None = None) -> dict:
         """Lazily register an existing WAV; never copy, rename, or modify it."""

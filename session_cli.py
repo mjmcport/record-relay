@@ -103,9 +103,11 @@ def serve(args):
                     session.set_local_listening(data["enabled"])
                 elif action in ("record", "save_buffer"):
                     session.start_recording(data["name"], data.get("limit", 1800),
-                                            buffered=action == "save_buffer")
+                                            buffered=action == "save_buffer",
+                                            request_id=data.get("request_id"),
+                                            side=data.get("side"))
                 elif action == "stop":
-                    frames = session.stop_recording()
+                    frames = session.stop_recording(expected_id=data.get("request_id"))
                     self.wfile.write(json.dumps({"recorded_frames": frames}).encode() + b"\n")
                     return
                 elif action != "status":

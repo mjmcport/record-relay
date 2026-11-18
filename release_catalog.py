@@ -21,6 +21,9 @@ USER_AGENT = "RecordRelay/1.0 (https://github.com/mjmcport/record-relay)"
 
 
 def _connect(path):
+    path = os.fspath(path)
+    if os.path.islink(path) or os.path.islink(path + "-wal") or os.path.islink(path + "-shm"):
+        raise ValueError("Metadata database and SQLite sidecars may not be symbolic links")
     db = sqlite3.connect(path, timeout=5)
     db.execute("PRAGMA busy_timeout=5000")
     db.execute("""CREATE TABLE IF NOT EXISTS metadata_cache
@@ -183,8 +186,9 @@ class ReleaseCatalog:
             data = self._get(key, url)
         except (OSError, URLError, TimeoutError, ConnectionError) as exc:
             raise ConnectionError("Offline") from exc
-        return [self._candidate(row) for row in data.get("releases", [])[:limit]
-                if isinstance(row, dict) and row.get("id")]
+        candidates = (self._candidate(row) for row in data.get("releases", [])[:limit]
+                      if isinstance(row, dict) and row.get("id"))
+        return [candidate for candidate in candidates if candidate is not None]
 
     @staticmethod
     def _candidate(row):

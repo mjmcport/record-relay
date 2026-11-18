@@ -6,6 +6,7 @@ import math
 from threading import Lock
 from time import monotonic
 import struct
+import uuid
 
 from capture import FRAME_BYTES, RATE, RecentAudio, relay
 from fanout import BackgroundRecording
@@ -23,6 +24,16 @@ class Session:
         self.last_signal_at = None
         self.lock = Lock()
         self.recording = None
+        self.recording_id = None
+        self.recording_side = None
+        self.recording_generation = None
+        self.recording_overlap_uncertain = False
+        self.recording_started_at = None
+        self.recording_prefix_frames = 0
+        self.recording_limit_frames = 0
+        self.last_side_a_end_frame = None
+        self.last_side_a_generation = None
+        self.boot_generation = str(uuid.uuid4())
         self.identify = False
         self.scrobble = False
         self.local_until = None
@@ -62,7 +73,7 @@ class Session:
                 raise ValueError("Enable Identify and Scrobble first")
             self.local_until = self.clock() + 1800 if enabled else None
 
-    def start_recording(self, name, maximum_seconds=1800, *, buffered=False):
+    def start_recording(self, name, maximum_seconds=1800, *, buffered=False, request_id=None, side=None):
         if Path(name).name != name or not name.lower().endswith(".wav"):
             raise ValueError("Choose a plain WAV filename")
         if type(maximum_seconds) is not int or not 1 <= maximum_seconds <= 3600:
@@ -76,28 +87,74 @@ class Session:
             if self.last_signal_at is not None and self.clock() - self.last_signal_at >= 600:
                 self.turntable_buffer.clear()
                 self.last_signal_at = None
-            prefix = self.turntable_buffer.snapshot_blocks() if buffered else ()
+            bounds = self.turntable_buffer.bounds()
+            prefix = ()
+            selection = None
+            overlap_uncertain = False
+            if buffered:
+                if bounds["oldest_frame"] >= bounds["newest_frame"]:
+                    raise ValueError("There is no buffered turntable audio to save.")
+                start_frame = bounds["oldest_frame"]
+                if side == "B":
+                    if self.last_side_a_end_frame is not None and self.last_side_a_generation == bounds["generation"]:
+                        if self.last_side_a_end_frame < bounds["oldest_frame"]:
+                            overlap_uncertain = True
+                        start_frame = max(start_frame, self.last_side_a_end_frame)
+                    else:
+                        overlap_uncertain = True
+                if start_frame >= bounds["newest_frame"]:
+                    raise ValueError("There is no buffered audio after the last saved Side A boundary.")
+                selection, prefix = self.turntable_buffer.snapshot_selection(
+                    start_frame, generation=bounds["generation"])
             if buffered and not prefix:
                 raise ValueError("There is no buffered turntable audio to save.")
             if sum(map(len, prefix)) >= maximum_seconds * RATE * FRAME_BYTES:
                 raise ValueError("Choose a recording limit longer than the buffered audio.")
             self.recording = BackgroundRecording(destination, maximum_seconds, blocks=300 if buffered else 30, prefix=prefix)
+            self.recording_id = request_id
+            self.recording_side = side
+            self.recording_generation = bounds["generation"]
+            self.recording_overlap_uncertain = overlap_uncertain
+            self.recording_started_at = self.clock()
+            self.recording_prefix_frames = self.recording.offered_frames
+            self.recording_limit_frames = maximum_seconds * RATE
             if self.track is not None:
                 frame = max(0, self.recording.offered_frames - self.frames_since_gap) if buffered else 0
                 self.recording.add_match(frame, self.track)
 
-    def stop_recording(self):
+    def stop_recording(self, expected_id=None):
         with self.lock:
             recorder = self.recording
             if recorder is None:
                 return 0
+            if expected_id is not None and expected_id != self.recording_id:
+                raise RuntimeError("The active recording belongs to a different save request")
+            side = self.recording_side
+            generation = self.recording_generation
             recorder.closing.set()
         try:
-            return recorder.stop()
+            frames = recorder.stop()
+            if side == "A" and frames:
+                with self.lock:
+                    bounds = self.turntable_buffer.bounds()
+                    if bounds["generation"] == generation:
+                        # Use the ring's exact frame edge when Stop was requested.
+                        # The writer drains only blocks already offered before
+                        # closing, which have also reached this ring under lock.
+                        self.last_side_a_end_frame = bounds["newest_frame"]
+                        self.last_side_a_generation = generation
+            return frames
         finally:
             with self.lock:
                 if self.recording is recorder and recorder.finished.is_set():
                     self.recording = None
+                    self.recording_id = None
+                    self.recording_side = None
+                    self.recording_generation = None
+                    self.recording_overlap_uncertain = False
+                    self.recording_started_at = None
+                    self.recording_prefix_frames = 0
+                    self.recording_limit_frames = 0
 
     def offer(self, block):
         """Observe PCM after playback accepted it. Never perform disk or network I/O here."""
@@ -179,10 +236,21 @@ class Session:
                 state = "idle"
             elif recording.finished.is_set():
                 state = "failed" if recording.error else "finished"
+            elif recording.closing.is_set():
+                state = "finalizing"
             else:
                 state = "recording"
             now = self.clock()
             signal = self.signal and self.last_audio is not None and now - self.last_audio < 1
+            input_age = None if self.last_audio is None else max(0, now - self.last_audio)
+            input_state = ("no_input" if input_age is None else "stale" if input_age >= 1
+                           else "signal" if self.signal else "silence")
+            bounds = self.turntable_buffer.bounds()
+            side_a_end_available = (self.last_side_a_end_frame is not None
+                                    and self.last_side_a_generation == bounds["generation"]
+                                    and self.last_side_a_end_frame >= bounds["oldest_frame"])
+            projected_late_uncertain = (self.recording_overlap_uncertain if self.recording is not None
+                                        else not side_a_end_available)
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
             label = ""
             if track and all(isinstance(track.get(k), str) for k in ("artist", "album")):
@@ -191,11 +259,26 @@ class Session:
             if suggestion is not None and (self.library / suggestion).exists():
                 suggestion = f"{label[:85]} - {datetime.now():%Y%m%d-%H%M%S}.wav"
             return {"suggested_filename": suggestion,
+                    "capture_generation": f"{self.boot_generation}:{self.turntable_buffer.generation}",
+                    "boot_generation": self.boot_generation,
+                    "recording_id": self.recording_id,
+                    "recording_side": self.recording_side,
+                    "recording_frames": 0 if recording is None else recording.offered_frames,
+                    "recording_prefix_frames": self.recording_prefix_frames,
+                    "recording_elapsed_seconds": (None if self.recording_started_at is None
+                                                   else max(0, now - self.recording_started_at)),
+                    "recording_limit_frames": self.recording_limit_frames,
+                    "buffered_oldest_frame": bounds["oldest_frame"],
+                    "buffered_newest_frame": bounds["newest_frame"],
+                    "side_a_end_frame": self.last_side_a_end_frame,
+                    "late_save_uncertain": projected_late_uncertain,
                     "buffered_seconds": (self.turntable_buffer.size / (RATE * FRAME_BYTES)
                         if self.last_signal_at is not None and now - self.last_signal_at < 600 else 0),
                     "buffer_limit_seconds": 600,
                     "identify": self.identify, "scrobble": self.scrobble,
                     "signal": signal, "recording": state, "track": track,
+                    "input_state": input_state,
+                    "input_age_seconds": None if input_age is None else round(input_age, 2),
                     "local_listening": self.local_until is not None and self.local_until > now,
                     "track_epoch": self.track_epoch,
                     "recognition_timing": {

@@ -16,11 +16,14 @@ import os
 import re
 import shutil
 import stat
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
 import socket
+from album_service import AlbumService
+from catalog import Catalog, Conflict, CatalogError
+from release_catalog import RevisionConflict
 
 
 def forward(path, packet):
@@ -31,17 +34,21 @@ def forward(path, packet):
         return connection.makefile().readline(64_000).encode()
 
 
-def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network=None):
+def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network=None,
+                  album_service=None):
     address = f"{host}:{port}"
     token = secrets.token_urlsafe(32)
     directory = Path(__file__).parent
-    link = '<a href="/recordings/">Download recordings</a> · ' if library is not None else ""
+    link = ('<a href="/recordings/">Download recordings</a> · '
+            '<a href="/album/">Album workbench</a> · ' if library is not None else "")
     html = (directory / "panel.html").read_text().replace("__CONTROL_TOKEN__", token).replace("__RECORDINGS_LINK__", link)
     pages = {
         "/": ("text/html; charset=utf-8", html.encode()),
         "/review/": ("text/html; charset=utf-8", (directory / "review/index.html").read_text().replace("__REVIEW_TOKEN__", token).encode()),
         "/review/review.mjs": ("text/javascript; charset=utf-8", (directory / "review/review.mjs").read_bytes()),
         "/review/splits.mjs": ("text/javascript; charset=utf-8", (directory / "review/splits.mjs").read_bytes()),
+        "/album/": ("text/html; charset=utf-8", (directory / "ui/album.html").read_text().replace("__CONTROL_TOKEN__", token).encode()),
+        "/album/album.mjs": ("text/javascript; charset=utf-8", (directory / "ui/album.mjs").read_bytes()),
     }
 
     analysis_lock = Lock()
@@ -203,26 +210,47 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 if source.is_symlink() or not source.is_file():
                     raise ValueError("Saved side could not be opened.")
                 if self.path == "/recordings/draft":
-                    # Keep review drafts in the panel's private state directory.
-                    drafts = Path(gettempdir()) / "review-drafts"
-                    drafts.mkdir(mode=0o700, exist_ok=True)
-                    draft = drafts / (name + ".json")
-                    if "draft" in data:
-                        payload = data["draft"]
-                        if not isinstance(payload, dict):
-                            raise ValueError("Invalid review draft.")
-                        with NamedTemporaryFile(dir=drafts, delete=False) as temporary:
-                            pending = Path(temporary.name)
-                            try:
-                                temporary.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-                                temporary.close()
-                                pending.replace(draft)
-                            finally:
-                                pending.unlink(missing_ok=True)
-                        result = {"saved": True}
+                    if album_service is not None:
+                        catalog = album_service.catalog
+                        take = catalog.take_for_locator(name)
+                        if take is None:
+                            legacy_project = catalog.get_or_create_project(
+                                "00000000-0000-4000-8000-000000000001", "Imported recordings")
+                            take = catalog.import_legacy_wav(source, project_id=legacy_project["id"])
+                        if "draft" in data:
+                            result = catalog.save_review_draft(take["id"], data["draft"])
+                        else:
+                            result = catalog.load_review_draft(take["id"])
+                            # Import only legacy drafts that already prove their
+                            # master identity. Filename-only drafts stay untouched.
+                            if not result:
+                                old_draft = Path(gettempdir()) / "review-drafts" / (name + ".json")
+                                if old_draft.is_file() and not old_draft.is_symlink():
+                                    legacy = json.loads(old_draft.read_bytes())
+                                    identity = legacy.get("master_sha256") or legacy.get("sha256") if isinstance(legacy, dict) else None
+                                    if identity == take.get("master_sha256"):
+                                        catalog.save_review_draft(take["id"], legacy)
+                                        result = catalog.load_review_draft(take["id"])
                     else:
-                        result = (json.loads(draft.read_bytes()) if draft.is_file()
-                                  and not draft.is_symlink() and draft.stat().st_size <= 8_100_000 else {})
+                        drafts = Path(gettempdir()) / "review-drafts"
+                        drafts.mkdir(mode=0o700, exist_ok=True)
+                        draft = drafts / (name + ".json")
+                        if "draft" in data:
+                            payload = data["draft"]
+                            if not isinstance(payload, dict):
+                                raise ValueError("Invalid review draft.")
+                            with NamedTemporaryFile(dir=drafts, delete=False) as temporary:
+                                pending = Path(temporary.name)
+                                try:
+                                    temporary.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                                    temporary.close()
+                                    pending.replace(draft)
+                                finally:
+                                    pending.unlink(missing_ok=True)
+                            result = {"saved": True}
+                        else:
+                            result = (json.loads(draft.read_bytes()) if draft.is_file()
+                                      and not draft.is_symlink() and draft.stat().st_size <= 8_100_000 else {})
                     self.send_body(200, "application/json", json.dumps(result).encode())
                     return
                 if self.path == "/recordings/waveform":
@@ -318,6 +346,18 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 return
             url = urlsplit(self.path)
             route = url.path
+            if album_service is not None and route == "/api/album":
+                self.send_body(200, "application/json", json.dumps(album_service.bootstrap()).encode())
+                return
+            if album_service is not None and route == "/api/release-pin":
+                project_id = parse_qs(url.query).get("project_id", [""])[0]
+                project = album_service.catalog.get_project(project_id)
+                if project is None:
+                    self.send_error(404)
+                else:
+                    pin = album_service.releases.get_pin(project_id)
+                    self.send_body(200, "application/json", json.dumps(pin or {"revision": 0, "release": None}).encode())
+                return
             if route == "/recordings/audio" and library is not None:
                 self.audio_preview(parse_qs(url.query).get("side", [""])[0])
                 return
@@ -342,12 +382,16 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.review_action()
                 return
             if self.path != "/control":
-                self.send_error(403)
+                if album_service is None or not self.path.startswith("/api/"):
+                    self.send_error(403)
+                    return
+                self.album_action()
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size < 4096:
                     raise ValueError
+                self.connection.settimeout(15)
                 response = forward(path, self.rfile.read(size))
                 if not response:
                     raise OSError
@@ -355,6 +399,41 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.send_body(503, "application/json", b'{"error":"Could not reach the capture session."}')
                 return
             self.send_body(200, "application/json", response)
+
+        def album_action(self):
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 16_384:
+                    raise ValueError("Request exceeds the supported size")
+                self.connection.settimeout(15)
+                data = json.loads(self.rfile.read(size))
+                if not isinstance(data, dict):
+                    raise ValueError("Expected a JSON object")
+                route = urlsplit(self.path).path
+                if route == "/api/projects":
+                    result, status = album_service.create_project(data), 201
+                elif route.startswith("/api/projects/"):
+                    project_id = unquote(route.removeprefix("/api/projects/"))
+                    result, status = album_service.edit_project(project_id, data), 200
+                elif route == "/api/releases/search":
+                    result, status = album_service.search_releases(data), 200
+                elif route == "/api/releases/preview":
+                    result, status = album_service.preview_release(data), 200
+                elif route == "/api/releases/pin":
+                    result, status = album_service.pin_release(data), 200
+                elif route == "/api/takes/start":
+                    result, status = album_service.start_take(data), 201
+                elif route == "/api/takes/stop":
+                    result, status = album_service.stop_take(data), 200
+                else:
+                    self.send_error(404)
+                    return
+                self.send_body(status, "application/json", json.dumps(result, ensure_ascii=False).encode())
+            except (KeyError, ValueError, TypeError, AttributeError, CatalogError, RevisionConflict) as error:
+                code = 409 if isinstance(error, (Conflict, RevisionConflict)) else 400
+                self.send_body(code, "application/json", json.dumps({"error": str(error)}).encode())
+            except (OSError, RuntimeError) as error:
+                self.send_body(503, "application/json", json.dumps({"error": str(error)}).encode())
 
     return Handler
 
@@ -364,8 +443,9 @@ if __name__ == "__main__":
     parser.add_argument("socket", type=Path)
     parser.add_argument("--port", type=int, default=8766, choices=range(1024, 65536), metavar="PORT")
     parser.add_argument("--library", type=Path, help="Directory containing finished WAV recordings")
+    parser.add_argument("--state-dir", type=Path, help="Private persistent state directory (defaults inside the library)")
     parser.add_argument("--listen", default="127.0.0.1", help="Explicit IPv4 listening address")
-    parser.add_argument("--allow-network", help="Private client subnet for LAN access")
+    parser.add_argument("--allow-network", help="Trusted private subnet; every client is treated as an operator (no per-user authentication)")
     args = parser.parse_args()
     address = ip_address(args.listen)
     network = ip_network(args.allow_network) if args.allow_network else None
@@ -376,6 +456,32 @@ if __name__ == "__main__":
         parser.error("LAN access needs a specific private IPv4 address and its private subnet.")
     if args.library is not None and (args.library.is_symlink() or not args.library.is_dir()):
         parser.error("Provide a real recording directory")
+    album_service = None
+    if args.library is not None:
+        state_dir = args.state_dir or (args.library / ".record-relay")
+        if state_dir.is_symlink():
+            parser.error("The private state directory may not be a symbolic link")
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        details = state_dir.stat()
+        if details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077:
+            parser.error("The private state directory must be owned by this user and mode 0700")
+        database = state_dir / "catalog.sqlite"
+        if any(path.is_symlink() for path in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm"))):
+            parser.error("The private catalog database and SQLite sidecars may not be symbolic links")
+        catalog = Catalog(database, args.library)
+        session_available = False
+        live_request_ids = set()
+        try:
+            status = json.loads(forward(args.socket, b'{"action":"status"}'))
+            session_available = isinstance(status, dict) and "error" not in status
+            if session_available and isinstance(status.get("recording_id"), str):
+                live_request_ids.add(status["recording_id"])
+        except (OSError, ValueError, TypeError):
+            pass
+        catalog.reconcile(live_request_ids=live_request_ids,
+                          defer_unverified_writing=not session_available)
+        album_service = AlbumService(catalog, args.socket)
     with ThreadingHTTPServer((args.listen, args.port), panel_handler(
-            args.socket, args.port, args.library, host=args.listen, allowed_network=network)) as server:
+            args.socket, args.port, args.library, host=args.listen, allowed_network=network,
+            album_service=album_service)) as server:
         server.serve_forever()

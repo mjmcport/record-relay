@@ -32,10 +32,11 @@ class RecentAudio:
         if len(block) % FRAME_BYTES:
             raise ValueError("Incomplete stereo frame")
         with self.lock:
+            captured_frames = len(block) // FRAME_BYTES
             block = block[-self.limit:]
             self.blocks.append(block)
             self.size += len(block)
-            self.newest_frame += len(block) // FRAME_BYTES
+            self.newest_frame += captured_frames
             while self.size > self.limit:
                 excess = self.size - self.limit
                 oldest = self.blocks.popleft()
@@ -86,13 +87,20 @@ class RecentAudio:
                     start_frame < self.oldest_frame or selected_end > self.newest_frame or
                     selected_end <= start_frame):
                 raise ValueError("Requested buffered audio range is unavailable")
-            offset = (start_frame - self.oldest_frame) * FRAME_BYTES
-            length = (selected_end - start_frame) * FRAME_BYTES
             blocks = tuple(self.blocks)
             selection = {"generation": self.generation, "start_frame": start_frame,
                          "end_frame": selected_end}
-        audio = b"".join(blocks)[offset:offset + length]
-        return selection, (audio,)
+            cursor = self.oldest_frame
+            selected = []
+            for block in blocks:
+                block_end = cursor + len(block) // FRAME_BYTES
+                left, right = max(start_frame, cursor), min(selected_end, block_end)
+                if left < right:
+                    first = (left - cursor) * FRAME_BYTES
+                    last = (right - cursor) * FRAME_BYTES
+                    selected.append(block if first == 0 and last == len(block) else block[first:last])
+                cursor = block_end
+        return selection, tuple(selected)
 
     def bounds(self):
         with self.lock:

@@ -176,3 +176,22 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(session.status()["buffered_seconds"], 0)
             with self.assertRaisesRegex(ValueError, "no buffered"):
                 session.start_recording("expired.wav", buffered=True)
+
+    def test_late_side_b_buffer_starts_after_saved_a_or_at_oldest_retained_frame(self):
+        with TemporaryDirectory() as folder:
+            session = Session(folder)
+            session.turntable_buffer.limit = 10 * 4
+            session.run(io.BytesIO(b"A" * (20 * 4)), io.BytesIO())
+            session.start_recording("side-a.wav", maximum_seconds=1, buffered=True, side="A")
+            self.assertEqual(session.stop_recording(), 10)
+            self.assertEqual(session.last_side_a_end_frame, 20)
+
+            session.run(io.BytesIO(b"B" * (20 * 4)), io.BytesIO())
+            self.assertEqual(session.turntable_buffer.bounds(), {
+                "generation": 0, "oldest_frame": 30, "newest_frame": 40,
+            })
+            session.start_recording("side-b.wav", maximum_seconds=1, buffered=True, side="B")
+            self.assertTrue(session.status()["late_save_uncertain"])
+            self.assertEqual(session.stop_recording(), 10)
+            with wave.open(str(Path(folder) / "side-b.wav"), "rb") as side_b:
+                self.assertEqual(side_b.readframes(10), b"B" * (10 * 4))
