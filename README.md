@@ -281,3 +281,9 @@ Assistant player. A null output can verify transport or metadata without
 generating an eligible listen. With unknown track length, allow at least four
 minutes of verified listening after the match lands and check ListenBrainz
 for one matching entry.
+
+A live turntable test confirmed that the existing player displayed recognized
+artist, track title, and album inside Music Assistant. The player restored the
+source name between tracks. The report counts only the listening observed
+after recognition, so a short track may finish without qualifying when the
+provider does not return a duration.
