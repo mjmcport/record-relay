@@ -105,3 +105,12 @@ Run `node --test tests/review.test.mjs` for the split-plan tests. The review too
 The review workflow passed an isolated Chrome test at 390 and 1280 pixels wide using a generated WAV. The test exercised file selection, adding and editing starts, downloading the exact split ranges, and removing a start without horizontal overflow.
 
 `submission.submit_once` now connects eligibility to persistent receipts and a caller-supplied sender. The sender must return explicit confirmation. Tested senders are simulated and no account is connected by this module.
+
+### Optional provider and recording pilots
+
+- `recording.py side-a.wav --record --maximum-seconds 1800` writes a lossless WAV master from explicitly supplied native PCM on stdin. The session stops at EOF or the requested cap. Empty and partial-frame sessions fail before publication. It does not open an audio device. The output filesystem must support hard links.
+- `providers.recognize_audd` is an optional adapter for [AudD](https://docs.audd.io/). It sends a bounded WAV excerpt only when enabled. AudD needs its own credential and consent to send a sample. The project does not yet provide a Shazam adapter or a live scheduler wiring the request gate to a provider.
+- `providers.send_listen` implements [ListenBrainz single-listen submission](https://listenbrainz.readthedocs.io/en/latest/users/json.html). Use it behind `submission.submit_once` with a private receipt database. The adapter has been exercised with simulated transport only.
+- `providers.cover_candidates` accepts a chosen MusicBrainz release ID and lists approved front artwork from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API). Release search, previews, and embedding are separate steps still to be integrated.
+
+The recording CLI is an independent consumer primitive. Before connecting it to live playback, put it behind a bounded queue and test that disk or recorder failures stop only the recording. Leave capture and playback on the original service until the combined generated-audio route passes.
