@@ -4,6 +4,7 @@ Capture is mocked with a generated WAV; the test never opens a physical device o
 contacts an online metadata service.
 """
 import json
+import base64
 import os
 from pathlib import Path
 import socket
@@ -47,6 +48,10 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
                                "live_view_clients": len(live_view_clients), "visual_sequence": 1,
                                "visual_age_seconds": 0.1,
                                "visual_samples": [0.25] * 64 if live_view_clients else None,
+                               "visual_audio": ({"timeByteArray": base64.b64encode(bytes([128] * 1024)).decode(),
+                                                "timeByteArrayL": base64.b64encode(bytes([128] * 1024)).decode(),
+                                                "timeByteArrayR": base64.b64encode(bytes([128] * 1024)).decode()}
+                                               if live_view_clients else None),
                                "visual_dropped_frames": 0,
                                "offline_queue": False, "listen_queue": [],
                                "identify": False, "scrobble": False}).encode()
@@ -109,6 +114,12 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
             page.wait_for_timeout(100)
             page.locator("#live-canvas").wait_for(state="visible")
             assert "Latest waveform frame" in page.locator("#live-view-status").inner_text()
+            page.locator("#visual-mode").select_option("spectrum")
+            page.get_by_role("button", name="Open animated visualizer").click()
+            page.get_by_role("dialog", name="Live visualizer").wait_for()
+            page.locator("#visualizer-preset").select_option("radial")
+            page.keyboard.press("Escape")
+            page.get_by_role("dialog").wait_for(state="hidden")
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
             page.set_viewport_size({"width": 320, "height": 720})
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
@@ -117,8 +128,8 @@ with tempfile.TemporaryDirectory(prefix="record-relay-browser-") as folder:
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
             page.screenshot(path="/tmp/record-relay-desktop.png", full_page=True)
             page.emulate_media(reduced_motion="reduce")
-            page.wait_for_function("document.querySelector('#live-view').disabled && !document.querySelector('#live-view').checked && document.querySelector('#live-canvas').hidden")
-            assert not page.locator("#live-canvas").is_visible()
+            page.wait_for_function("document.querySelector('#open-visualizer').disabled && document.querySelector('#live-view').checked && !document.querySelector('#live-canvas').hidden && document.querySelector('#visual-mode').value === 'spectrum' && document.querySelector('#visual-mode option[value=waveform]').disabled")
+            assert page.locator("#live-canvas").is_visible()
             assert not errors, errors
             context.close()
             browser.close()

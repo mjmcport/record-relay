@@ -1,3 +1,5 @@
+import {clearVisualization, receiveVisualization} from './visualizer.mjs';
+
 const token = document.querySelector('meta[name="control-token"]').content;
 const message = document.querySelector('#message');
 const captureStatus = document.querySelector('#capture-status');
@@ -10,6 +12,7 @@ const stopButton = document.querySelector('#stop-side');
 const projectSelect = document.querySelector('#project-select');
 const liveToggle = document.querySelector('#live-view');
 const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+const visualMode = document.querySelector('#visual-mode');
 let state = {projects: [], history: {items: []}, capture: {recording: 'unavailable'}};
 let project = null;
 let side = 'A';
@@ -19,6 +22,8 @@ let selectedRelease = null;
 let previousCaptureStatus = '';
 let rangeGeneration = null;
 let latestCapture = null;
+let latestSpectrum = null;
+let lastSpectrumAnnouncement = 0;
 let pollTimer = null;
 let lastAlbumRefresh = 0;
 let lastVisualSequence = 0;
@@ -28,6 +33,14 @@ if (!visualClientId) {
   visualClientId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   sessionStorage.setItem('record-relay-visual-client', visualClientId);
 }
+
+function applyMotionPreference(reduced) {
+  visualMode.options[0].disabled = reduced;
+  if (reduced) visualMode.value = 'spectrum';
+  document.querySelector('#motion-note').hidden = !reduced;
+  document.querySelector('#open-visualizer').disabled = reduced || !liveToggle.checked;
+}
+applyMotionPreference(reducedMotionQuery.matches);
 
 async function request(path, {method = 'GET', body} = {}) {
   const response = await fetch(path, {
@@ -72,6 +85,24 @@ function drawLiveView(samples) {
     context.moveTo(0, height / 2); context.lineTo(width, height / 2);
   }
   context.stroke();
+}
+
+function drawSpectrum(bands) {
+  const canvas = document.querySelector('#live-canvas');
+  const context = canvas.getContext('2d');
+  const width = Math.max(1, canvas.clientWidth), height = Math.max(1, canvas.clientHeight);
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.fillStyle = '#171619'; context.fillRect(0, 0, width, height);
+  if (!bands?.length) return;
+  const gap = 2, bar = Math.max(1, (width - gap * (bands.length - 1)) / bands.length);
+  context.fillStyle = '#73d4c0';
+  bands.forEach((level, index) => {
+    const value = Math.max(0, Math.min(1, Number(level) || 0));
+    const h = Math.max(1, value * height * .86);
+    context.fillRect(index * (bar + gap), height - h, bar, h);
+  });
 }
 
 function updateSideButtons() {
@@ -184,21 +215,36 @@ function updateCapture(value) {
   if (value.error) throw new Error(value.error);
   latestCapture = value;
   liveToggle.checked = value.live_view_client === true;
-  liveToggle.disabled = reducedMotionQuery.matches;
   document.querySelector('#motion-note').hidden = !reducedMotionQuery.matches;
+  document.querySelector('#open-visualizer').disabled = reducedMotionQuery.matches || !liveToggle.checked;
   const liveCanvas = document.querySelector('#live-canvas');
   liveCanvas.hidden = !liveToggle.checked;
   if (liveToggle.checked) {
     const sequence = Number(value.visual_sequence) || 0;
     const age = value.visual_age_seconds;
     if (sequence > lastVisualSequence && age != null && age < 0.5) {
-      drawLiveView(value.visual_samples);
+      latestSpectrum = receiveVisualization(value.visual_audio, document.querySelector('#visual-mode').value,
+        document.querySelector('#visual-delay').value);
+      const mode = document.querySelector('#visual-mode').value;
+      document.querySelector('#live-canvas').setAttribute('aria-label', mode === 'spectrum'
+        ? 'Live input frequency spectrum.' : 'Live input waveform.');
+      if (latestSpectrum && Date.now() - lastSpectrumAnnouncement >= 3000) {
+        const level = values => values.reduce((sum, item) => sum + item, 0) / Math.max(1, values.length);
+        const describe = value => value < .08 ? 'very low' : value < .25 ? 'low' : value < .55 ? 'moderate' : 'high';
+        const low = level(latestSpectrum.slice(0, 12));
+        const mid = level(latestSpectrum.slice(12, 32));
+        const high = level(latestSpectrum.slice(32));
+        say(document.querySelector('#visual-summary'), `Approximate input spectrum: low frequencies ${describe(low)}, mid frequencies ${describe(mid)}, high frequencies ${describe(high)}.`);
+        lastSpectrumAnnouncement = Date.now();
+      }
+      if (document.querySelector('#visual-mode').value === 'spectrum') drawSpectrum(latestSpectrum);
+      else drawLiveView(value.visual_samples);
       lastVisualSequence = sequence;
     }
     const dropped = Number(value.visual_dropped_frames) || 0;
     const statusText = age == null || age >= 0.5
       ? 'Live view paused · waiting for a fresh input frame.'
-      : 'Latest waveform frame ' + age.toFixed(1) + ' sec ago.';
+      : (document.querySelector('#visual-mode').value === 'spectrum' ? 'Latest spectrum frame ' : 'Latest waveform frame ') + age.toFixed(1) + ' sec ago.';
     say(document.querySelector('#live-view-status'),
       statusText + ' Visuals do not prove listening. ' + dropped + ' stale frames dropped.');
   } else {
@@ -517,11 +563,29 @@ document.querySelector('#live-view').addEventListener('change', async event => {
     }});
     if (value.error) throw new Error(value.error);
     updateCapture(value);
+    document.querySelector('#open-visualizer').disabled = reducedMotionQuery.matches || !event.target.checked;
+    if (!event.target.checked) {
+      latestSpectrum = null; clearVisualization();
+      document.querySelector('#visualizer-dialog').close();
+    }
     startPolling();
   } catch (error) {
     event.target.checked = false;
     say(message, error.message);
   }
+});
+
+document.querySelector('#visual-mode').addEventListener('change', () => {
+  const mode = document.querySelector('#visual-mode').value;
+  document.querySelector('#live-canvas').setAttribute('aria-label', mode === 'spectrum'
+    ? 'Live input frequency spectrum.' : 'Live input waveform.');
+  if (!latestCapture) return;
+  if (mode === 'spectrum') drawSpectrum(latestSpectrum);
+  else drawLiveView(latestCapture.visual_samples);
+});
+document.querySelector('#visual-delay').addEventListener('input', event => {
+  const delay = Number(event.target.value);
+  document.querySelector('#visual-delay-value').value = delay ? `${delay} ms` : '0 ms';
 });
 
 function startPolling() {
@@ -551,14 +615,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 reducedMotionQuery.addEventListener('change', event => {
-  liveToggle.disabled = event.matches;
-  document.querySelector('#motion-note').hidden = !event.matches;
-  if (event.matches && liveToggle.checked) {
-    liveToggle.checked = false;
-    request('/control', {method: 'POST', body: {
-      action: 'visual_client', enabled: false, visual_client_id: visualClientId,
-    }}).then(updateCapture).catch(() => {});
-    say(message, 'Live waveform turned off because reduced motion is enabled.');
-  }
+  applyMotionPreference(event.matches);
+  if (event.matches) say(message, 'Reduced motion: the spectrum is static and refreshes once per second; animation is disabled.');
   startPolling();
 });

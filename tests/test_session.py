@@ -26,9 +26,12 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(playback.getvalue(), pcm)
             self.assertGreater(frame["visual_sequence"], 0)
             self.assertEqual(len(frame["visual_samples"]), 64)
+            self.assertEqual(len(frame["visual_audio"]["timeByteArrayL"]), 1368)
+            self.assertEqual(len(__import__("base64").b64decode(frame["visual_audio"]["timeByteArrayR"])), 1024)
             self.assertEqual(frame["visual_dropped_frames"], 0)
             session.set_live_view(False)
             self.assertIsNone(session.status()["visual_samples"])
+            self.assertIsNone(session.status()["visual_audio"])
             session.close_live_view()
 
     def test_failed_side_a_close_does_not_publish_a_boundary(self):

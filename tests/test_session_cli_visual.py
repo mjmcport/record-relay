@@ -75,12 +75,21 @@ class SessionCliVisualTests(unittest.TestCase):
                     result = request({"action": "visual_client", "enabled": True,
                                       "visual_client_id": client_b})
                     self.assertEqual(result["live_view_clients"], 2)
+                    client_c, client_d, client_e = str(uuid4()), str(uuid4()), str(uuid4())
+                    request({"action": "visual_client", "enabled": True, "visual_client_id": client_c})
+                    request({"action": "visual_client", "enabled": True, "visual_client_id": client_d})
+                    result = request({"action": "visual_client", "enabled": True, "visual_client_id": client_e})
+                    self.assertIn("four browser tabs", result["error"])
                     result = request({"action": "visual_client", "enabled": False,
                                       "visual_client_id": client_a})
                     self.assertTrue(result["live_view"])
-                    self.assertEqual(result["live_view_clients"], 1)
+                    self.assertEqual(result["live_view_clients"], 3)
                     result = request({"action": "visual_client", "enabled": False,
                                       "visual_client_id": client_b})
+                    self.assertTrue(result["live_view"])
+                    for client_id in (client_c, client_d):
+                        result = request({"action": "visual_client", "enabled": False,
+                                          "visual_client_id": client_id})
                     self.assertFalse(result["live_view"])
                     self.assertEqual(result["live_view_clients"], 0)
                 finally:

@@ -47,6 +47,7 @@ def serve(args):
         raise ValueError("The control socket needs an owner-only directory")
     session = Session(args.library)
     visual_clients = {}
+    max_visual_clients = 4
     visual_lock = Lock()
     visual_stop = Event()
 
@@ -109,6 +110,12 @@ def serve(args):
                     except (ValueError, TypeError, AttributeError) as error:
                         raise ValueError("Invalid live view client ID") from error
                     with visual_lock:
+                        now = monotonic()
+                        for expired_id, expiry in list(visual_clients.items()):
+                            if expiry <= now:
+                                visual_clients.pop(expired_id, None)
+                        if client_id not in visual_clients and len(visual_clients) >= max_visual_clients:
+                            raise ValueError("Live view is already active in four browser tabs")
                         visual_clients[client_id] = monotonic() + 5
                 if action == "identify":
                     if type(data["enabled"]) is not bool:
@@ -133,6 +140,12 @@ def serve(args):
                         raise ValueError("A live view client ID is required")
                     with visual_lock:
                         if data["enabled"]:
+                            now = monotonic()
+                            for expired_id, expiry in list(visual_clients.items()):
+                                if expiry <= now:
+                                    visual_clients.pop(expired_id, None)
+                            if client_id not in visual_clients and len(visual_clients) >= max_visual_clients:
+                                raise ValueError("Live view is already active in four browser tabs")
                             visual_clients[client_id] = monotonic() + 5
                         else:
                             visual_clients.pop(client_id, None)

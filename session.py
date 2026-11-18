@@ -1,5 +1,6 @@
 """Control optional recording and recognition during a running PCM relay."""
 from pathlib import Path
+import base64
 import re
 from datetime import datetime
 import math
@@ -55,6 +56,7 @@ class Session:
         self.live_view = False
         self.visual_sequence = 0
         self.visual_samples = None
+        self.visual_audio = None
         self.visual_dropped_frames = 0
         self.visual_frame_time = None
         self.visual_generation = 0
@@ -68,6 +70,7 @@ class Session:
             if not self.live_view:
                 self.visual_generation += 1
                 self.visual_samples = None
+                self.visual_audio = None
                 self.visual_frame_time = None
                 while True:
                     try:
@@ -92,7 +95,16 @@ class Session:
             if not enabled:
                 continue
             frame_count = len(block) // FRAME_BYTES
+            if frame_count <= 0:
+                continue
             samples = []
+            left_bytes = bytearray(1024)
+            right_bytes = bytearray(1024)
+            for index in range(1024):
+                frame = min(frame_count - 1, index * frame_count // 1024)
+                left, right = struct.unpack_from("<hh", block, frame * FRAME_BYTES)
+                left_bytes[index] = max(0, min(255, (left >> 8) + 128))
+                right_bytes[index] = max(0, min(255, (right >> 8) + 128))
             for bucket in range(64):
                 first = bucket * frame_count // 64
                 last = max(first + 1, (bucket + 1) * frame_count // 64)
@@ -104,6 +116,13 @@ class Session:
                 if self.live_view and self.visual_generation == generation:
                     self.visual_sequence += 1
                     self.visual_samples = samples
+                    # Three fixed, small channels keep the browser packet bounded.
+                    # This is visualization input only; no audio is played or retained.
+                    self.visual_audio = {
+                        "timeByteArray": base64.b64encode(bytes((l + r) // 2 for l, r in zip(left_bytes, right_bytes))).decode("ascii"),
+                        "timeByteArrayL": base64.b64encode(left_bytes).decode("ascii"),
+                        "timeByteArrayR": base64.b64encode(right_bytes).decode("ascii"),
+                    }
                     self.visual_frame_time = self.clock()
 
     def close_live_view(self):
@@ -381,6 +400,7 @@ class Session:
                     "visual_age_seconds": (None if self.visual_frame_time is None else
                                             max(0, now - self.visual_frame_time)),
                     "visual_samples": self.visual_samples if self.live_view else None,
+                    "visual_audio": self.visual_audio if self.live_view else None,
                     "signal": signal, "recording": state, "track": track,
                     "input_state": input_state,
                     "input_age_seconds": None if input_age is None else round(input_age, 2),

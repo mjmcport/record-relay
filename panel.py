@@ -50,6 +50,7 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
         "/review/splits.mjs": ("text/javascript; charset=utf-8", (directory / "review/splits.mjs").read_bytes()),
         "/album/": ("text/html; charset=utf-8", (directory / "ui/album.html").read_text().replace("__CONTROL_TOKEN__", token).encode()),
         "/album/album.mjs": ("text/javascript; charset=utf-8", (directory / "ui/album.mjs").read_bytes()),
+        "/album/visualizer.mjs": ("text/javascript; charset=utf-8", (directory / "ui/visualizer.mjs").read_bytes()),
     }
 
     analysis_lock = Lock()

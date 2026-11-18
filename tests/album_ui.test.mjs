@@ -25,3 +25,22 @@ test('album workbench is connected to persistent catalog and capture APIs', asyn
   assert.match(client, /record-relay-active-take/);
   assert.match(client, /stopButton/);
 });
+
+test('optional visualization exposes static and keyboard-accessible motion paths', async () => {
+  const [html, script] = await Promise.all([
+    readFile(new URL('ui/album.html', root), 'utf8'),
+    readFile(new URL('ui/visualizer.mjs', root), 'utf8'),
+  ]);
+  assert.match(html, /id="visual-mode"/);
+  assert.match(html, /id="visual-delay"[^>]+aria-describedby="visual-delay-help"/);
+  assert.match(html, /id="visualizer-dialog" aria-labelledby="visualizer-heading"/);
+  assert.match(html, /id="visualizer-canvas" role="img" aria-label=/);
+  assert.match(html, /Press Escape or Close visualizer to stop/);
+  assert.match(html, /Reduced motion keeps the spectrum static/);
+  assert.match(script, /prefers-reduced-motion: reduce/);
+  assert.match(script, /document\.hidden/);
+  assert.match(script, /packets\.length > 32/);
+  assert.match(script, /1000 \/ 24/);
+  assert.match(script, /dialog\.close\(\)/);
+  assert.doesNotMatch(script, /AudioContext|WebGL|fetch\(/);
+});
