@@ -13,7 +13,7 @@ try:
         with wave.open(str(src),'wb') as f:
             f.setparams((2,2,48000,0,'NONE','not compressed'))
             f.writeframes(b'\0'*48000*4*2)
-        peaks.write_text(json.dumps({'frames':96000,'sample_rate':48000,'peaks':[[0,0],[0,0]]}))
+        peaks.write_text(json.dumps({'frames':96000,'sample_rate':48000,'peaks':[[0,0],[0,0]],'suggested_starts':[0,48000]}))
         browser=p.chromium.launch(executable_path=os.environ.get('CHROME_PATH'))
         for width in (390, 1280):
             page=browser.new_page(viewport={'width':width,'height':850})
@@ -23,9 +23,9 @@ try:
             page.locator('#recording').set_input_files(src)
             page.locator('#waveform').set_input_files(peaks)
             page.wait_for_function('!document.querySelector("#add").disabled')
-            page.get_by_role('button',name='Save track start').click()
-            page.locator('#seconds').fill('1')
-            page.get_by_role('button',name='Save track start').click()
+            page.get_by_role('button',name='Use suggested starts').click()
+            assert page.locator('#splits li').count()==2
+            assert 'Suggested starts added' in page.locator('#status').inner_text()
             page.get_by_role('button',name='Edit track start at 1.000 seconds').click()
             page.locator('#seconds').fill('1.5')
             page.get_by_role('button',name='Save track start').click()
