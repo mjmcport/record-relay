@@ -59,6 +59,11 @@ class ScrobbleHTTPTests(unittest.TestCase):
                 for _ in range(245):
                     monitor.tick(state, lambda _: True)
                 self.assertEqual(len(received), 1)
+                progress = monitor.progress(state)
+                self.assertTrue(progress["submitted"])
+                self.assertEqual(progress["required_seconds"], 240)
+                self.assertGreaterEqual(progress["seconds"], 240)
+                self.assertIsNone(monitor.progress(state | {"track_epoch": 9}))
                 path, token, packet = received[0]
                 self.assertEqual((path, token), ("/1/submit-listens", "Token mock-lb"))
                 self.assertEqual(packet["payload"][0]["track_metadata"]["release_name"], "Record")

@@ -20,6 +20,7 @@ label{display:block;margin:.6rem 0}
 <label><input type="checkbox" id="identify"> Identify tracks</label>
 <label><input type="checkbox" id="scrobble"> Scrobble verified listening</label>
 <p id="track">Waiting for session status.</p>
+<p id="scrobble-progress" hidden></p>
 </section>
 <section aria-labelledby="record-heading">
 <h2 id="record-heading">Record a side</h2>
@@ -59,6 +60,12 @@ async function update(data) {
     el("identify").checked = state.identify;
     el("scrobble").checked = state.scrobble;
     el("track").textContent = state.track ? [state.track.artist,state.track.title].filter(Boolean).join(" — ") : "No track identified.";
+    const progress = state.scrobble_progress;
+    el("scrobble-progress").hidden = !state.scrobble;
+    el("scrobble-progress").textContent = progress?.submitted ? "ListenBrainz accepted this listen." :
+      progress?.required_seconds ? Math.min(progress.seconds, progress.required_seconds) +
+        " of " + progress.required_seconds + " verified listening seconds" :
+      "Waiting for a recognized track and verified playback.";
     el("recording").textContent = "Recording: " + state.recording;
     if (state.scrobble_error) el("message").textContent = "Playback verification or scrobble failed.";
     if (state.recognition_error) el("message").textContent = "Recognition request failed.";

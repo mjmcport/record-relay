@@ -66,6 +66,20 @@ class ScrobbleMonitor:
         self.play = None
         self.track_epoch = None
 
+    def progress(self, status):
+        play = self.play
+        track = status.get("track")
+        if (not status.get("scrobble") or not isinstance(track, dict)
+                or play is None or self.track_epoch != status.get("track_epoch")):
+            return None
+        artist, title = track.get("artist"), track.get("title")
+        if not all(isinstance(value, str) for value in (artist, title)):
+            return None
+        if json.dumps([artist.casefold().strip(), title.casefold().strip()]) != play.track_id:
+            return None
+        return {"seconds": int(play.seconds), "required_seconds": play.required_seconds,
+                "submitted": play.submitted}
+
     def tick(self, status, still_enabled):
         from listening import ListeningInstance
 

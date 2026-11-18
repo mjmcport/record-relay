@@ -88,6 +88,7 @@ def serve(args):
                     result["recognition_error"] = recognition_worker.error
                 if scrobble_worker is not None:
                     result["scrobble_error"] = scrobble_worker.error
+                    result["scrobble_progress"] = monitor.progress(result)
             except (ValueError, KeyError, TypeError, AttributeError, RuntimeError, OSError) as error:
                 result = {"error": str(error)}
             self.wfile.write(json.dumps(result).encode() + b"\n")

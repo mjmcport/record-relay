@@ -18,15 +18,17 @@ class ListeningInstance:
         if audible and same_track:
             self.seconds += seconds
 
-    def eligible(self, *, enabled):
-        # Unknown length requires four minutes of verified listening.
+    @property
+    def required_seconds(self):
         if self.duration is None:
-            threshold = 240
-        elif not math.isfinite(self.duration) or self.duration <= 30:
-            return False
-        else:
-            threshold = min(self.duration / 2, 240)
-        return enabled and not self.submitted and self.seconds >= threshold
+            return 240
+        if not math.isfinite(self.duration) or self.duration <= 30:
+            return None
+        return min(self.duration / 2, 240)
+
+    def eligible(self, *, enabled):
+        threshold = self.required_seconds
+        return enabled and not self.submitted and threshold is not None and self.seconds >= threshold
 
     @property
     def receipt_key(self):
