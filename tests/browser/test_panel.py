@@ -41,21 +41,22 @@ with TemporaryDirectory() as folder:
                         page.get_by_text("Recording: idle").wait_for()
                         denied = page.request.post(f"http://127.0.0.1:{port}/control", data="{}")
                         assert denied.status == 403
+                        page.locator("#name").fill("side-a.wav")
                         page.get_by_role("button", name="Start recording").click()
                         page.get_by_text("Recording: recording").wait_for()
                         relay.stdin.write(b"abcd" * 4800)
                         relay.stdin.flush()
                         time.sleep(0.2)
-                        page.get_by_role("button", name="Stop recording").click()
-                        page.get_by_text("Saved 4800 frames.").wait_for()
+                        page.get_by_role("button", name="Stop and save recording").click()
+                        page.get_by_text("Saved 0:00 to Saved recordings.").wait_for()
                         with wave.open(str(root / "side-a.wav"), "rb") as audio:
                             assert audio.readframes(4800) == b"abcd" * 4800
                         page.get_by_role("checkbox", name="Identify tracks").check()
                         page.get_by_text("Start the session with a configured recognition provider").wait_for()
                         assert not page.get_by_role("checkbox", name="Identify tracks").is_checked()
                         scrobble = page.get_by_role("checkbox", name="Scrobble verified listening")
-                        scrobble.check()
-                        page.get_by_text("Configure Music Assistant and ListenBrainz first").wait_for()
+                        scrobble.click()
+                        page.get_by_text("Configure ListenBrainz first").wait_for()
                         assert not scrobble.is_checked()
                         browser.close()
                 finally:

@@ -23,6 +23,7 @@ try:
             page.locator('#recording').set_input_files(src)
             page.locator('#waveform').set_input_files(peaks)
             page.wait_for_function('!document.querySelector("#add").disabled')
+            page.locator('#advanced > summary').click()
             page.get_by_role('button',name='Use suggested starts').click()
             assert page.locator('#splits li').count()==2
             assert 'Suggested starts added' in page.locator('#status').inner_text()

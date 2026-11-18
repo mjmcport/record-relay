@@ -389,6 +389,15 @@ with public port forwarding. For access from a less-trusted network, keep the
 panel loopback-only and use the documented SSH tunnel. Do not describe LAN
 mode as secured or authenticated.
 
+With systemd `ProtectSystem=strict`, give both panel services the same
+persistent private state directory: pass `--state-dir /var/lib/record-relay/app-state`
+and declare `StateDirectory=record-relay`
+with mode `0700` for the `sendspin-cli` service account. This keeps the catalog
+and release database writable without placing them beside the WAV masters.
+If the LAN panel also uses `StateDirectory=record-relay-exports` for temporary
+exports, preserve both state directories when adding the override. Example
+drop-ins are in `ops/systemd/`.
+
 When a confirmed gap's first lookup returns no match, Record Relay can retry
 once after 20 seconds of additional audio. That retry uses the same per-minute
 and hourly request budgets as the initial lookup. Further misses and provider
