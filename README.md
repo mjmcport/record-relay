@@ -101,3 +101,7 @@ Run `python3 waveform.py side-a.wav --columns 1000` to produce compact JSON with
 4. Download the split plan. Its start and end values are sample frames ready for the FLAC export command. Files stay local to the browser. Matching duration is a sanity check, so select the JSON generated from the actual WAV.
 
 Run `node --test tests/review.test.mjs` for the split-plan tests. The review tool is local-only and has no live capture or Music Assistant controls.
+
+The review workflow passed an isolated Chrome test at 390 and 1280 pixels wide using a generated WAV. The test exercised file selection, adding and editing starts, downloading the exact split ranges, and removing a start without horizontal overflow.
+
+`submission.submit_once` now connects eligibility to persistent receipts and a caller-supplied sender. The sender must return explicit confirmation. Tested senders are simulated and no account is connected by this module.
