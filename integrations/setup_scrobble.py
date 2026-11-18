@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from music_assistant import MusicAssistantObserver
 from session_cli import private_text
 
 
@@ -24,6 +25,11 @@ def main():
     if details.st_uid != os.getuid() or details.st_mode & 0o077 or args.output.exists():
         parser.error("Choose a new output path in a directory owned by you with mode 0700.")
     ma_token = private_text(args.ma_token_file).strip()
+    try:
+        MusicAssistantObserver(args.music_assistant_url, ma_token, args.player_id,
+                               args.source_uri, transport=None)
+    except ValueError as error:
+        parser.error(str(error))
     token = getpass("ListenBrainz user token (hidden): ").strip()
     if any(not value or any(c.isspace() for c in value) for value in (ma_token, token)):
         parser.error("Both tokens must be nonempty and contain no whitespace.")
