@@ -7,7 +7,7 @@ import unittest
 
 from metadata import (RecognitionEvidence, TypedIdentifier, safe_filename,
                       shazam_evidence, suggested_album_name)
-from release_catalog import ReleaseCatalog, RevisionConflict, ServiceBusy
+from release_catalog import ReleaseCatalog, RevisionConflict, ServiceBusy, _phrase
 
 
 RELEASE_ID = "00000000-0000-0000-0000-000000000001"
@@ -73,6 +73,59 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         with self.assertRaises(ValueError):
             catalog.search()
+
+    def test_live_track_search_finds_alternative_linked_releases(self):
+        calls = []
+        def transport(request, timeout):
+            calls.append(request.full_url)
+            return io.BytesIO(json.dumps({"recordings": [{
+                "id": RECORDING_ID, "title": "Song", "artist-credit-phrase": "Artist", "score": 97,
+                "releases": [{"id": RELEASE_ID, "title": "Album", "artist-credit-phrase": "Artist",
+                              "date": "1980", "country": "GB", "media": [{"format": "Vinyl", "track-count": 8}]}]}, {
+                "id": "00000000-0000-0000-0000-000000000003", "title": "Song",
+                "artist-credit-phrase": "Artist", "score": 91,
+                "releases": [{"id": RELEASE_ID, "title": "Album", "artist-credit-phrase": "Artist",
+                              "date": "1980", "country": "GB", "media": [{"format": "Vinyl", "track-count": 8}]}]}]}).encode())
+        catalog = ReleaseCatalog(self.db, transport=transport, clock=lambda _: None)
+        candidates = catalog.search(title="Song", artist="Artist")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["release_mbid"], RELEASE_ID)
+        self.assertEqual(len(candidates[0]["matched_tracks"]), 2)
+        self.assertIn("/recording?", calls[0])
+        self.assertIn("recording%3A%22Song%22", calls[0])
+        self.assertEqual(_phrase('Song" OR artist:*'), '"Song\\" OR artist\\:\\*"')
+
+    def test_approved_front_art_is_bounded_cached_and_persisted_with_explicit_pin(self):
+        class Response(io.BytesIO):
+            def __init__(self, body, url, content_type="application/json"):
+                super().__init__(body)
+                self.url = url
+                self.headers = {"Content-Type": content_type}
+
+        calls = []
+        def caa(request, timeout):
+            calls.append(request.full_url)
+            if request.full_url.endswith("-250.jpg"):
+                return Response(b"\xff\xd8\xfffixture", request.full_url, "image/jpeg")
+            return Response(json.dumps({"images": [
+                {"id": 123, "front": True, "approved": True, "comment": "Front"},
+                {"id": 456, "front": False, "approved": True},
+                {"id": 789, "front": True, "approved": False},
+            ]}).encode(), request.full_url)
+        catalog = ReleaseCatalog(self.db, transport=self.transport, cover_transport=caa,
+                                 clock=lambda _: None)
+        choices = catalog.cover_art_candidates(RELEASE_ID)
+        self.assertEqual([item["image_id"] for item in choices], ["123"])
+        self.assertEqual(catalog.cover_thumbnail(RELEASE_ID, "123"), b"\xff\xd8\xfffixture")
+        self.assertEqual(catalog.cover_thumbnail(RELEASE_ID, "123"), b"\xff\xd8\xfffixture")
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(ValueError):
+            catalog.cover_thumbnail(RELEASE_ID, "456")
+        pin = catalog.pin("project-1", RELEASE_ID, expected_revision=0, cover_image_id="123")
+        self.assertEqual(pin["revision"], 1)
+        self.assertEqual(catalog.get_pin("project-1")["cover"]["image_id"], "123")
+        catalog.pin("project-1", RELEASE_ID, expected_revision=1)
+        self.assertIsNone(catalog.get_pin("project-1")["cover"])
 
     def test_release_snapshot_pin_cas_and_offline_reads(self):
         online = ReleaseCatalog(self.db, transport=self.transport, clock=lambda _: None)

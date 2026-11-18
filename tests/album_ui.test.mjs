@@ -18,7 +18,7 @@ test('album workbench is connected to persistent catalog and capture APIs', asyn
   assert.match(html, /Search MusicBrainz/);
   assert.match(html, /prefers-reduced-motion:reduce/);
   assert.doesNotMatch(html, /Synthetic fixture preview|No recording or catalog changes are sent/);
-  for (const endpoint of ['/api/album', '/api/projects', '/api/releases/search', '/api/releases/preview', '/api/releases/pin',
+  for (const endpoint of ['/api/album', '/api/projects', '/api/releases/search', '/api/releases/preview', '/api/releases/artwork', '/api/releases/pin',
     '/api/takes/start', '/api/takes/stop']) assert.ok(client.includes(endpoint), endpoint);
   assert.match(client, /X-Control-Token/);
   assert.match(client, /record-relay-project/);
@@ -27,6 +27,15 @@ test('album workbench is connected to persistent catalog and capture APIs', asyn
   assert.match(client, /Local catalog connected\./);
   assert.match(html, /live-view-help/);
   assert.match(html, /animated view opens separately/);
+  assert.match(html, /id="auto-album-suggestions"/);
+  assert.match(html, /off by default/);
+  assert.match(html, /id="live-release-candidates"/);
+  assert.match(html, /id="cover-candidates"/);
+  assert.match(html, /id="pinned-cover"/);
+  assert.match(client, /record-relay-auto-album-suggest/);
+  assert.match(client, /Nothing will be pinned automatically/);
+  assert.match(client, /cover_image_id/);
+  assert.match(client, /Cover Art Archive/);
 });
 
 test('optional visualization exposes static and keyboard-accessible motion paths', async () => {

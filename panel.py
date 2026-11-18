@@ -389,6 +389,23 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                     pin = album_service.releases.get_pin(project_id)
                     self.send_body(200, "application/json", json.dumps(pin or {"revision": 0, "release": None}).encode())
                 return
+            if album_service is not None and route == "/api/releases/artwork":
+                query = parse_qs(url.query)
+                try:
+                    content = album_service.artwork_thumbnail(
+                        query.get("release_mbid", [""])[0], query.get("image_id", [""])[0])
+                except ValueError:
+                    self.send_error(404)
+                except (OSError, RuntimeError, ConnectionError):
+                    self.send_error(503)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.send_header("Cache-Control", "private, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(content)
+                return
             if route == "/recordings/audio" and library is not None:
                 self.audio_preview(parse_qs(url.query).get("side", [""])[0])
                 return
@@ -451,6 +468,8 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                     result, status = album_service.search_releases(data), 200
                 elif route == "/api/releases/preview":
                     result, status = album_service.preview_release(data), 200
+                elif route == "/api/releases/artwork":
+                    result, status = album_service.artwork_candidates(data), 200
                 elif route == "/api/releases/pin":
                     result, status = album_service.pin_release(data), 200
                 elif route == "/api/takes/start":

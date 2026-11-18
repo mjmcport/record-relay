@@ -144,7 +144,7 @@ The socket has no network listener. A CLI session without a configured provider 
 
 With the private PCM session running, use `python3 panel.py /path/to/private/control.sock` and open `http://127.0.0.1:8766/`. Run the panel on the same machine as the socket. For a Pi, forward that loopback port over SSH. The panel assumes a trusted local OS account and uses loopback, exact origin checks and a per-process control token. Keep it off publicly accessible interfaces.
 
-When started with `--library`, the panel also enables `/album/` and keeps project, take, release-pin, and review-draft state in `.record-relay/catalog.sqlite` inside the library. Use `--state-dir` to select another owner-only mode-0700 directory. Album labels are independent of master filenames. Release search and edition preview make online requests only after explicit user actions; offline capture and review remain available.
+When started with `--library`, the panel also enables `/album/` and keeps project, take, release-pin, and review-draft state in `.record-relay/catalog.sqlite` inside the library. Use `--state-dir` to select another owner-only mode-0700 directory. Album labels are independent of master filenames. Manual release search and edition preview make online requests only after explicit user actions. Optional live edition suggestions remain off until separately enabled in the Album Workbench; offline capture and review remain available.
 
 `--allow-network` treats every client on the selected private subnet as an operator. The current panel has no per-user authentication, so those clients can read album history, change capture controls, and reach Identify/Scrobble controls. Keep the default loopback bind with an SSH tunnel unless the entire subnet is intentionally trusted; LAN mode is not suitable for a shared or untrusted network.
 
@@ -190,6 +190,12 @@ At a playback break, stop the original capture process before opening the Behrin
 If the source fails, stop the restarted Sendspin process and relay, remove only the pilot override, reload systemd, and start the original unit. Check that Music Assistant recognizes the same Turntable identity and confirm audible playback before closing the recovery window.
 
 The Pi deployment verified the real Behringer device opened through the relay, the paired Sendspin client opened the monitor at 48 kHz stereo 16-bit, and Music Assistant continued to list the existing source. A synthetic run under the service account produced a WAV with 163,200 sample frames and the expected PCM. Audible playback on a physical speaker and recording a real record require a live listening test. Recognition and scrobbling start disabled.
+
+### Live album and cover suggestions
+
+The Album Workbench can optionally use a fresh recognized artist/title and album, when present, to suggest matching MusicBrainz release editions. This setting is separate from Identify, off by default, and remembered in that browser. It sends only recognized text to MusicBrainz, never audio. A title/artist-only match searches linked recordings and then lists their releases; a recognized album searches release editions directly. Every result remains labeled unconfirmed. The user reviews multiple editions and the release track list and explicitly pins the chosen edition; no first result is selected automatically. Search results are kept separate from manual search results.
+
+After an edition is reviewed, Record Relay can fetch up to four approved front-cover thumbnails through the server. It accepts only MusicBrainz release IDs and numeric image IDs, follows only HTTPS redirects to the Cover Art Archive and its documented Archive.org image hosts, caps responses at 500 KB, and caches thumbnails in the private catalog. The browser does not contact an image CDN. Cover choices remain unselected until the user chooses one; pinning stores that choice with the project and shows it in the sleeve. Artwork is community contributed: review its rights before reuse or export. The saved-track review/export flow still uses its separate local artwork selection.
 
 ### Where recognized metadata appears
 

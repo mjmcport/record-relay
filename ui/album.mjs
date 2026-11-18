@@ -11,6 +11,9 @@ const bufferButton = document.querySelector('#save-recent');
 const stopButton = document.querySelector('#stop-side');
 const projectSelect = document.querySelector('#project-select');
 const liveToggle = document.querySelector('#live-view');
+const autoSuggestionToggle = document.querySelector('#auto-album-suggestions');
+const liveSuggestionStatus = document.querySelector('#live-suggestion-status');
+const liveReleaseCandidates = document.querySelector('#live-release-candidates');
 const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 const visualMode = document.querySelector('#visual-mode');
 let state = {projects: [], history: {items: []}, capture: {recording: 'unavailable'}};
@@ -19,6 +22,12 @@ let side = 'A';
 let active = null;
 let pinRevision = 0;
 let selectedRelease = null;
+let selectedReleaseSource = null;
+let selectedReleaseTrackKey = null;
+let selectedReleaseStale = false;
+let selectedCoverId = null;
+let liveSuggestionKey = '';
+let liveSuggestionGeneration = 0;
 let previousCaptureStatus = '';
 let rangeGeneration = null;
 let latestCapture = null;
@@ -29,6 +38,8 @@ let lastAlbumRefresh = 0;
 let lastVisualSequence = 0;
 let captureRefreshPending = false;
 let visualClientId = sessionStorage.getItem('record-relay-visual-client');
+autoSuggestionToggle.checked = localStorage.getItem('record-relay-auto-album-suggest') === 'yes';
+if (autoSuggestionToggle.checked) say(liveSuggestionStatus, 'Automatic suggestions are on for this browser. Waiting for a recognized track.');
 if (!visualClientId) {
   visualClientId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   sessionStorage.setItem('record-relay-visual-client', visualClientId);
@@ -56,6 +67,144 @@ async function request(path, {method = 'GET', body} = {}) {
 
 function say(node, value) {
   if (node.textContent !== value) node.textContent = value;
+}
+
+function resetFieldset(node, legend) {
+  node.replaceChildren(Object.assign(document.createElement('legend'), {textContent: legend}));
+}
+
+function renderReleaseCandidates(target, candidates, radioName, statusNode, sourceLabel, selectionSource) {
+  resetFieldset(target, sourceLabel);
+  for (const [index, candidate] of candidates.entries()) {
+    const row = document.createElement('div'); row.className = 'candidate';
+    const radio = document.createElement('input'); radio.type = 'radio'; radio.name = radioName;
+    radio.value = candidate.release_mbid; radio.id = `${radioName}-${index}`;
+    const text = document.createElement('label'); text.htmlFor = radio.id;
+    const labels = (candidate.labels || []).map(item => [item.name, item.catalog_number].filter(Boolean).join(' · ')).filter(Boolean).join(', ');
+    const matched = candidate.matched_tracks?.length
+      ? ` · matched track: ${candidate.matched_tracks.map(item => `${item.title}${item.score == null ? '' : ` (score ${item.score})`}`).join('; ')}` : '';
+    text.textContent = `${candidate.title || 'Untitled'} · ${candidate.artist || 'Unknown artist'} · ${candidate.date || 'Date unknown'} · ${candidate.country || 'Country unknown'} · ${(candidate.formats || []).join(', ') || 'Format unknown'} · ${labels || 'Label unknown'} · ${candidate.track_count ?? 'Unknown'} tracks${matched}`;
+    radio.addEventListener('change', () => reviewRelease(candidate, statusNode, selectionSource));
+    row.append(radio, text); target.append(row);
+  }
+}
+
+async function reviewRelease(candidate, statusNode, selectionSource = 'manual') {
+  const mbid = candidate.release_mbid;
+  selectedRelease = candidate;
+  selectedReleaseSource = selectionSource;
+  selectedReleaseTrackKey = selectionSource === 'live' ? liveSuggestionKey : null;
+  selectedReleaseStale = false;
+  selectedCoverId = null;
+  document.querySelector('#pin-release').disabled = true;
+  const covers = document.querySelector('#cover-candidates');
+  const coverOptions = document.querySelector('#cover-options');
+  covers.hidden = true; coverOptions.replaceChildren();
+  say(statusNode, 'Loading edition details…');
+  try {
+    const preview = await request('/api/releases/preview', {method: 'POST', body: {release_mbid: mbid}});
+    if (selectedRelease?.release_mbid !== mbid) return;
+    selectedRelease = preview;
+    const container = document.querySelector('#candidate-preview');
+    container.replaceChildren();
+    const heading = document.createElement('h4'); heading.textContent = `${preview.title || 'Untitled'} · ${preview.artist || 'Unknown artist'}`;
+    const detail = document.createElement('p');
+    const labelDetail = (preview.labels || []).map(item => [item.name, item.catalog_number].filter(Boolean).join(' · ')).filter(Boolean).join(', ');
+    detail.textContent = `${preview.date || 'Date unknown'} · ${preview.country || 'Country unknown'} · ${(preview.media || []).map(item => item.format || 'Media').join(', ') || 'Format unknown'} · ${labelDetail || 'Label unknown'}`;
+    const list = document.createElement('ol');
+    let shown = 0;
+    for (const medium of preview.media || []) for (const track of medium.tracks || []) {
+      if (shown++ >= 60) break;
+      const item = document.createElement('li');
+      const performers = track.artists?.length ? ` · ${track.artists.join(', ')}` : '';
+      item.textContent = `${medium.position || 'Media'}-${track.number || track.position || ''} ${track.title || track.recording_title || 'Untitled'}${performers}`;
+      list.append(item);
+    }
+    container.append(heading, detail, list);
+    try {
+      const art = await request('/api/releases/artwork', {method: 'POST', body: {release_mbid: mbid}});
+      if (selectedRelease?.release_mbid !== mbid) return;
+      coverOptions.replaceChildren();
+      for (const [index, cover] of art.candidates.entries()) {
+        const option = document.createElement('div'); option.className = 'cover-option';
+        const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'cover-choice';
+        radio.value = cover.image_id; radio.id = `cover-${mbid}-${index}`;
+        radio.addEventListener('change', () => { selectedCoverId = cover.image_id; });
+        const label = document.createElement('label'); label.htmlFor = radio.id;
+        label.textContent = `Cover option ${index + 1}${cover.comment ? ` · ${cover.comment}` : ''}`;
+        const image = document.createElement('img'); image.src = cover.thumbnail_url; image.loading = 'lazy';
+        image.width = 250; image.height = 250;
+        image.alt = `Unselected cover art alternative ${index + 1} from the Cover Art Archive for ${preview.title || 'this release'}`;
+        option.append(radio, label, image); coverOptions.append(option);
+      }
+      covers.hidden = false;
+      const source = document.createElement('a');
+      source.href = `https://coverartarchive.org/release/${encodeURIComponent(mbid)}`;
+      source.target = '_blank'; source.rel = 'noopener noreferrer';
+      source.textContent = 'View this release’s Cover Art Archive source (opens a new tab)';
+      covers.append(source);
+      if (!art.candidates.length) {
+        const empty = document.createElement('p'); empty.textContent = 'No approved front-cover alternatives are available for this edition.';
+        coverOptions.append(empty);
+      }
+    } catch {
+      if (selectedRelease?.release_mbid === mbid) {
+        covers.hidden = false;
+        coverOptions.replaceChildren();
+        const unavailable = document.createElement('p'); unavailable.textContent = 'Cover art is unavailable. You can still review and pin this release.';
+        coverOptions.append(unavailable);
+      }
+    }
+    if (selectedRelease?.release_mbid !== mbid) return;
+    document.querySelector('#pin-release').disabled = false;
+    say(statusNode, 'Review the edition and optional cover, then pin only if they match your record.');
+  } catch (error) {
+    if (selectedRelease?.release_mbid === mbid) say(statusNode, `Edition details unavailable: ${error.message}`);
+  }
+}
+
+async function searchReleases(query, {target, statusNode, automatic = false, isCurrent = null}) {
+  if (!automatic) {
+    selectedRelease = null; selectedReleaseSource = null; selectedReleaseTrackKey = null;
+    selectedReleaseStale = false; selectedCoverId = null;
+    document.querySelector('#pin-release').disabled = true;
+    document.querySelector('#candidate-preview').replaceChildren();
+    document.querySelector('#cover-candidates').hidden = true;
+  }
+  resetFieldset(target, automatic ? 'Unconfirmed suggestions' : 'Matching editions (not pinned)');
+  say(statusNode, automatic ? 'Searching for album editions based on the recognized track…' : 'Searching MusicBrainz…');
+  const result = await request('/api/releases/search', {method: 'POST', body: query});
+  if (isCurrent && !isCurrent()) return;
+  if (!result.candidates.length) {
+    say(statusNode, automatic ? 'No candidate editions found. Album remains unconfirmed; use the manual search below.'
+      : 'No releases found. Try another album or continue without a pin.');
+    return;
+  }
+  renderReleaseCandidates(target, result.candidates, automatic ? 'live-release-choice' : 'release-choice', statusNode,
+    automatic ? 'Unconfirmed suggestions' : 'Matching editions (not pinned)', automatic ? 'live' : 'manual');
+  say(statusNode, `Unconfirmed: ${result.candidates.length} candidate editions. Review alternatives and choose one to inspect; none is pinned.`);
+}
+
+function maybeSuggestLiveTrack(track) {
+  if (!autoSuggestionToggle.checked || !track || typeof track !== 'object') return;
+  const title = typeof track.title === 'string' ? track.title.trim() : '';
+  const artist = typeof track.artist === 'string' ? track.artist.trim() : '';
+  const album = typeof track.album === 'string' ? track.album.trim() : '';
+  if (!title || !artist) return;
+  const key = `${artist}\0${title}\0${album}`;
+  if (key === liveSuggestionKey) return;
+  liveSuggestionKey = key;
+  if (selectedReleaseSource === 'live' && selectedReleaseTrackKey !== key) {
+    selectedReleaseStale = true;
+    document.querySelector('#pin-release').disabled = true;
+    say(liveSuggestionStatus, `New recognized track: ${title} · ${artist}. The previously reviewed edition is retained but cannot be pinned for this different track.`);
+  }
+  const generation = ++liveSuggestionGeneration;
+  const query = album ? {album, artist} : {title, artist};
+  say(liveSuggestionStatus, `Track identified: ${title} · ${artist}. Album identity is unconfirmed; checking alternatives…`);
+  searchReleases(query, {target: liveReleaseCandidates, statusNode: liveSuggestionStatus, automatic: true,
+    isCurrent: () => generation === liveSuggestionGeneration && liveSuggestionKey === key && autoSuggestionToggle.checked})
+    .catch(error => { if (generation === liveSuggestionGeneration) say(liveSuggestionStatus, `Suggestions unavailable: ${error.message}. The track remains unconfirmed.`); });
 }
 
 function drawLiveView(samples) {
@@ -165,6 +314,9 @@ async function loadPin() {
   if (!project) {
     say(summary, 'Create an album project to pin an edition.');
     say(document.querySelector('#album-artist'), 'Not set');
+    document.querySelector('#pinned-cover').hidden = true;
+    document.querySelector('#pinned-cover').removeAttribute('src');
+    document.querySelector('#sleeve-placeholder').hidden = false;
     return;
   }
   try {
@@ -176,6 +328,15 @@ async function loadPin() {
       : 'No release pinned. You can record offline and add one later.');
     say(document.querySelector('#album-artist'), release?.artist || 'Not set');
     say(document.querySelector('#sleeve-title'), release?.title || project.label || 'Album cover');
+    const cover = document.querySelector('#pinned-cover');
+    const placeholder = document.querySelector('#sleeve-placeholder');
+    if (pin.cover?.thumbnail_url) {
+      cover.src = pin.cover.thumbnail_url;
+      cover.alt = `Selected cover artwork for ${release?.title || 'this album'} from the Cover Art Archive`;
+      cover.hidden = false; placeholder.hidden = true;
+    } else {
+      cover.hidden = true; cover.removeAttribute('src'); placeholder.hidden = false;
+    }
   } catch (error) { say(summary, `Release information unavailable: ${error.message}`); }
 }
 
@@ -214,6 +375,7 @@ async function refresh() {
 function updateCapture(value) {
   if (value.error) throw new Error(value.error);
   latestCapture = value;
+  maybeSuggestLiveTrack(value.track);
   liveToggle.checked = value.live_view_client === true;
   document.querySelector('#motion-note').hidden = !reducedMotionQuery.matches;
   document.querySelector('#open-visualizer').disabled = reducedMotionQuery.matches || !liveToggle.checked;
@@ -466,65 +628,34 @@ document.querySelector('#release-search').addEventListener('submit', async event
   event.preventDefault();
   const target = document.querySelector('#release-candidates');
   const searchStatus = document.querySelector('#release-search-status');
-  target.replaceChildren(Object.assign(document.createElement('legend'), {textContent: 'Matching editions (not pinned)'}));
-  document.querySelector('#candidate-preview').replaceChildren();
-  selectedRelease = null;
-  document.querySelector('#pin-release').disabled = true;
-  say(searchStatus, 'Searching MusicBrainz…');
   try {
-    const result = await request('/api/releases/search', {method: 'POST', body: {
+    await searchReleases({
       album: document.querySelector('#search-album').value,
       artist: document.querySelector('#search-artist').value,
-    }});
-    target.replaceChildren(Object.assign(document.createElement('legend'), {textContent: 'Matching editions (not pinned)'}));
-    if (!result.candidates.length) { say(searchStatus, 'No releases found. Try another album or continue without a pin.'); return; }
-    say(searchStatus, `${result.candidates.length} candidate releases. Choose one to review, then pin it.`);
-    for (const [index, candidate] of result.candidates.entries()) {
-      const row = document.createElement('div'); row.className = 'candidate';
-      const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'release-choice'; radio.value = candidate.release_mbid; radio.id = `release-${index}`;
-      const text = document.createElement('label'); text.htmlFor = radio.id;
-      const labels = candidate.labels.map(item => [item.name, item.catalog_number].filter(Boolean).join(' · ')).filter(Boolean).join(', ');
-      text.textContent = `${candidate.title || 'Untitled'} · ${candidate.artist || 'Unknown artist'} · ${candidate.date || 'Date unknown'} · ${candidate.country || 'Country unknown'} · ${candidate.formats.join(', ') || 'Format unknown'} · ${labels || 'Label unknown'} · ${candidate.track_count} tracks`;
-      radio.addEventListener('change', async () => {
-        selectedRelease = candidate;
-        document.querySelector('#pin-release').disabled = true;
-        say(searchStatus, 'Loading edition details…');
-        try {
-          const preview = await request('/api/releases/preview', {method: 'POST', body: {release_mbid: candidate.release_mbid}});
-          if (selectedRelease?.release_mbid !== candidate.release_mbid) return;
-          selectedRelease = preview;
-          const container = document.querySelector('#candidate-preview');
-          container.replaceChildren();
-          const heading = document.createElement('h4'); heading.textContent = `${preview.title || 'Untitled'} · ${preview.artist || 'Unknown artist'}`;
-          const detail = document.createElement('p');
-          const labelDetail = preview.labels.map(item => [item.name, item.catalog_number].filter(Boolean).join(' · ')).filter(Boolean).join(', ');
-          detail.textContent = `${preview.date || 'Date unknown'} · ${preview.country || 'Country unknown'} · ${preview.media.map(item => item.format || 'Media').join(', ') || 'Format unknown'} · ${labelDetail || 'Label unknown'}`;
-          const list = document.createElement('ol');
-          let shown = 0;
-          for (const medium of preview.media) for (const track of medium.tracks) {
-            if (shown++ >= 60) break;
-            const item = document.createElement('li');
-            const performers = track.artists.length ? ` · ${track.artists.join(', ')}` : '';
-            item.textContent = `${medium.position || 'Media'}-${track.number || track.position || ''} ${track.title || track.recording_title || 'Untitled'}${performers}`;
-            list.append(item);
-          }
-          if (shown > 60) { const more = document.createElement('p'); more.textContent = 'Showing the first 60 tracks.'; container.append(more); }
-          container.prepend(heading, detail);
-          container.append(list);
-          document.querySelector('#pin-release').disabled = false;
-          say(searchStatus, 'Review the edition details, then choose Pin selected edition to apply it.');
-        } catch (error) { say(searchStatus, `Edition details unavailable: ${error.message}`); }
-      });
-      row.append(radio, text); target.append(row);
-    }
+    }, {target, statusNode: searchStatus});
   } catch (error) { say(searchStatus, `Release search unavailable: ${error.message}`); }
 });
 
+autoSuggestionToggle.addEventListener('change', () => {
+  localStorage.setItem('record-relay-auto-album-suggest', autoSuggestionToggle.checked ? 'yes' : 'no');
+  liveSuggestionGeneration++;
+  if (!autoSuggestionToggle.checked) {
+    say(liveSuggestionStatus, 'Automatic edition suggestions are off. Existing alternatives remain unconfirmed.');
+    return;
+  }
+  say(liveSuggestionStatus, 'Automatic suggestions are on for newly recognized tracks. Nothing will be pinned automatically.');
+  maybeSuggestLiveTrack(latestCapture?.track);
+});
+
 document.querySelector('#pin-release').addEventListener('click', async () => {
-  if (!selectedRelease || !project) return;
-  if (!confirm(`Pin ${selectedRelease.title} by ${selectedRelease.artist} to this album?`)) return;
+  if (!selectedRelease || !project || selectedReleaseStale) return;
   try {
-    const pin = await request('/api/releases/pin', {method: 'POST', body: {project_id: project.id, release_mbid: selectedRelease.release_mbid, revision: pinRevision}});
+    const coverDetail = selectedCoverId ? ' with the selected cover artwork' : '';
+    if (!confirm(`Pin ${selectedRelease.title} by ${selectedRelease.artist} to this album${coverDetail}?`)) return;
+    const pin = await request('/api/releases/pin', {method: 'POST', body: {
+      project_id: project.id, release_mbid: selectedRelease.release_mbid, revision: pinRevision,
+      ...(selectedCoverId ? {cover_image_id: selectedCoverId} : {}),
+    }});
     pinRevision = pin.revision;
     say(message, 'Release pinned to this album project.');
     await loadPin();

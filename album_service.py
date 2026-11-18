@@ -71,13 +71,26 @@ class AlbumService:
             raise ValueError("Choose a release candidate to preview")
         return self.releases.fetch_release(release_mbid)
 
+    def artwork_candidates(self, data):
+        release_mbid = data.get("release_mbid")
+        if not isinstance(release_mbid, str):
+            raise ValueError("Choose a release candidate first")
+        return {"candidates": self.releases.cover_art_candidates(release_mbid)}
+
+    def artwork_thumbnail(self, release_mbid, image_id):
+        return self.releases.cover_thumbnail(release_mbid, image_id)
+
     def pin_release(self, data):
         project_id, mbid, revision = data.get("project_id"), data.get("release_mbid"), data.get("revision")
         if not isinstance(project_id, str) or self.catalog.get_project(project_id) is None:
             raise ValueError("Choose an existing album first")
         if type(revision) is not int or revision < 0:
             raise ValueError("Reload release choices before applying one")
-        return self.releases.pin(project_id, mbid, expected_revision=revision)
+        cover_image_id = data.get("cover_image_id")
+        if cover_image_id is not None and not isinstance(cover_image_id, (str, int)):
+            raise ValueError("Choose a cover from this release")
+        return self.releases.pin(project_id, mbid, expected_revision=revision,
+                                 cover_image_id=cover_image_id)
 
     def start_take(self, data):
         project_id, side = data.get("project_id"), data.get("side")
