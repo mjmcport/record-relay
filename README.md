@@ -126,3 +126,16 @@ Add `--cover selected.jpg` (or a local PNG) to `export_track.py` to embed review
 The audio buffer and lookup policy are provider-independent. The earlier Shazam prototype remains a reference. Apple's supported [ShazamKit](https://developer.apple.com/shazamkit/) lists macOS and Android among its platforms but does not list Raspberry Pi Linux. An official Shazam route could use a separately authorized Mac companion, subject to Apple's entitlement requirements and end-to-end testing. This repository does not depend on an unofficial Shazam endpoint.
 
 [AudD](https://audd.io/pricing/) is the headless-compatible HTTP alternative. It needs an API token and sends a short audio excerpt when enabled. Its published entry tier is \$5/month for 1,000 requests, and a 300-request trial is listed where available. No account or subscription has been created. Set a provider-side hard cap if piloting it. The repository currently tests simulated calls only.
+
+### Control an active PCM pilot
+
+Create a private runtime directory (mode 0700) and a recording folder, then run `python3 session_cli.py serve /path/to/private/control.sock /path/to/recordings` with PCM on stdin and a playback sink on stdout. In a second terminal, run `python3 session_cli.py control /path/to/private/control.sock '<action JSON>'`:
+
+| Action JSON | Result |
+| --- | --- |
+| `{"action":"status"}` | Reports input signal, recognition state and recording state |
+| `{"action":"record","name":"side-a.wav","limit":1800}` | Starts a new side master from subsequent samples |
+| `{"action":"stop"}` | Finalizes the side, reporting captured frames |
+| `{"action":"identify","enabled":true}` | Arms the recognition gate in this session |
+
+The socket has no network listener. A bare CLI session has no recognizer worker or provider credential. An embedding process can schedule `Session.lookup_if_due` outside the playback thread and supply a bounded recognizer. A late match is discarded if Identify was turned off during the request. Stop the recording and inspect its result before offloading it. Integrated synthetic tests cover continuity, recording controls and recognition state. The physical input service is still controlled by the original Sendspin process.
