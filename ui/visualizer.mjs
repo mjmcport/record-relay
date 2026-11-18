@@ -111,25 +111,29 @@ function paint(frame, now, animated) {
     return;
   }
   if (preset === 'ribbon') {
-    context.lineWidth = Math.max(2, width * .0025);
-    context.strokeStyle = '#73d4c0';
-    context.beginPath();
-    for (let i = 0; i < bars.length; i++) {
-      const x = i * width / (bars.length - 1);
-      const y = height * .52 - bars[i] * height * .34 - (animated ? Math.sin(i * .22 + t) * height * .035 : 0);
-      if (i === 0) context.moveTo(x, y);
-      else {
-        const prevX = (i - 1) * width / (bars.length - 1);
-        const prevY = height * .52 - bars[i - 1] * height * .34 - (animated ? Math.sin((i - 1) * .22 + t) * height * .035 : 0);
-        const midX = (prevX + x) / 2;
-        context.quadraticCurveTo(prevX, prevY, midX, (prevY + y) / 2);
-        if (i === bars.length - 1) context.quadraticCurveTo(midX, (prevY + y) / 2, x, y);
-      }
+    // A mirrored time-domain ribbon makes this preset visibly distinct from
+    // the bar-based Orbit and spoke-based Radial renderers.
+    const count = 192, center = height * .52;
+    const upper = [], lower = [];
+    for (let i = 0; i < count; i++) {
+      const x = i * width / (count - 1);
+      const sample = frame.mono[Math.floor(i * (frame.mono.length - 1) / (count - 1))];
+      const flow = animated ? Math.sin(i * .045 + t) * .025 : 0;
+      const amplitude = Math.max(-1, Math.min(1, sample + flow)) * height * .36;
+      upper.push([x, center - amplitude]); lower.push([x, center + amplitude]);
     }
-    context.stroke();
-    context.globalAlpha = .35;
-    context.lineTo(width, height * .82); context.lineTo(0, height * .82); context.closePath();
-    context.fillStyle = '#73d4c0'; context.fill(); context.globalAlpha = 1;
+    context.beginPath();
+    context.moveTo(upper[0][0], upper[0][1]);
+    for (let i = 1; i < upper.length; i++) context.lineTo(upper[i][0], upper[i][1]);
+    for (let i = lower.length - 1; i >= 0; i--) context.lineTo(lower[i][0], lower[i][1]);
+    context.closePath();
+    const ribbon = context.createLinearGradient(0, center - height * .36, 0, center + height * .36);
+    ribbon.addColorStop(0, 'rgba(115,212,192,.16)');
+    ribbon.addColorStop(.5, 'rgba(244,187,117,.5)');
+    ribbon.addColorStop(1, 'rgba(115,212,192,.16)');
+    context.fillStyle = ribbon; context.fill();
+    context.lineWidth = Math.max(2, width * .0025);
+    context.strokeStyle = '#73d4c0'; context.stroke();
     return;
   }
   for (let i = 0; i < bars.length; i++) {
