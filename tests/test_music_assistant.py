@@ -58,12 +58,12 @@ class MusicAssistantTests(unittest.TestCase):
             state = {"scrobble": True, "signal": True, "track": {"artist": "A", "title": "B"}}
 
             for _ in range(240):
-                self.assertFalse(monitor.tick(state, lambda _track: True))
-            self.assertFalse(monitor.tick(state, lambda _track: False))
-            self.assertFalse(monitor.tick(state, lambda _track: True))
-            self.assertTrue(monitor.tick(state, lambda _track: True))
-            monitor.tick(state | {"signal": False}, lambda _track: True)
-            self.assertFalse(monitor.tick(state, lambda _track: True))
+                self.assertFalse(monitor.tick(state, lambda _track, _local: True))
+            self.assertFalse(monitor.tick(state, lambda _track, _local: False))
+            self.assertFalse(monitor.tick(state, lambda _track, _local: True))
+            self.assertTrue(monitor.tick(state, lambda _track, _local: True))
+            monitor.tick(state | {"signal": False}, lambda _track, _local: True)
+            self.assertFalse(monitor.tick(state, lambda _track, _local: True))
             self.assertEqual(len(sent), 1)
 
     def test_same_match_after_confirmed_boundary_starts_a_new_listen(self):
@@ -83,9 +83,9 @@ class MusicAssistantTests(unittest.TestCase):
         monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: next(clock))
         status = {"signal": True, "scrobble": True, "track_epoch": 2,
                   "track": {"artist": "Artist", "title": "Track"}}
-        monitor.tick(status, lambda _: True)
-        monitor.tick(status, lambda _: True)
-        monitor.tick({**status, "track_epoch": 3}, lambda _: True)
+        monitor.tick(status, lambda _track, _local: True)
+        monitor.tick(status, lambda _track, _local: True)
+        monitor.tick({**status, "track_epoch": 3}, lambda _track, _local: True)
         self.assertEqual([key[1] for key in observed], [10, 10, 30])
 
     def test_verified_duration_allows_a_short_track_to_qualify_after_half(self):
@@ -111,6 +111,33 @@ class MusicAssistantTests(unittest.TestCase):
             state = {"scrobble": True, "signal": True,
                      "track": {"artist": "Artist", "title": "Song", "duration_seconds": 90}}
             for _ in range(45):
-                self.assertFalse(monitor.tick(state, lambda _: True))
-            self.assertTrue(monitor.tick(state, lambda _: True))
+                self.assertFalse(monitor.tick(state, lambda _track, _local: True))
+            self.assertTrue(monitor.tick(state, lambda _track, _local: True))
             self.assertEqual(sent, [45])
+
+    def test_explicit_local_listening_uses_the_same_receipt_and_no_ma_request(self):
+        from music_assistant import ScrobbleMonitor
+        from pathlib import Path
+        from receipts import ReceiptStore
+        from tempfile import TemporaryDirectory
+        from worker import PlaybackTiming, ScrobbleDelivery
+
+        class Observer:
+            def audible(self):
+                raise AssertionError("Local listening must not call Music Assistant")
+
+        with TemporaryDirectory() as folder:
+            elapsed = iter(range(120))
+            sent = []
+            delivery = ScrobbleDelivery(
+                ReceiptStore(Path(folder) / "receipts.db"), "mock",
+                timing=PlaybackTiming(clock=lambda: next(elapsed)),
+                sender=lambda play, **_: sent.append(play.receipt_key) is None,
+            )
+            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: 100)
+            state = {"scrobble": True, "signal": True, "local_listening": True,
+                     "track": {"artist": "Artist", "title": "Song", "duration_seconds": 60}}
+            for _ in range(75):
+                monitor.tick(state, lambda track, local: local)
+            self.assertEqual(len(sent), 1)
+            self.assertFalse(monitor.tick(state | {"signal": False}, lambda track, local: local))

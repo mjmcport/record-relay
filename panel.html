@@ -19,6 +19,7 @@ label{display:block;margin:.6rem 0}
 <h2 id="identify-heading">Track identification</h2>
 <label><input type="checkbox" id="identify"> Identify tracks</label>
 <label><input type="checkbox" id="scrobble"> Scrobble verified listening</label>
+<label><input type="checkbox" id="local_listening"> I’m listening locally (expires in 30 minutes)</label>
 <p id="track">Waiting for session status.</p>
 <p id="scrobble-progress" hidden></p>
 </section>
@@ -59,6 +60,9 @@ async function update(data) {
     const state = await request({action:"status"});
     el("identify").checked = state.identify;
     el("scrobble").checked = state.scrobble;
+    el("local_listening").checked = state.local_listening;
+    el("local_listening").closest("label").hidden = state.local_listening === undefined;
+    el("local_listening").disabled = !state.scrobble;
     el("track").textContent = state.track ? [state.track.artist,state.track.title].filter(Boolean).join(" — ") : "No track identified.";
     const progress = state.scrobble_progress;
     el("scrobble-progress").hidden = !state.scrobble;
@@ -71,13 +75,14 @@ async function update(data) {
     if (state.recognition_error) el("message").textContent = "Recognition request failed.";
   } catch (error) {
     el("message").textContent = error.message;
-    if (["identify","scrobble"].includes(data.action)) el(data.action).checked = !data.enabled;
+    if (["identify","scrobble","local_listening"].includes(data.action)) el(data.action).checked = !data.enabled;
   } finally {
     pending = false;
   }
 }
 el("identify").onchange = event => update({action:"identify",enabled:event.target.checked});
 el("scrobble").onchange = event => update({action:"scrobble",enabled:event.target.checked});
+el("local_listening").onchange = event => update({action:"local_listening",enabled:event.target.checked});
 document.querySelector("form").onsubmit = event => {
   event.preventDefault();
   update({action:"record",name:el("name").value,limit:el("limit").valueAsNumber*60});

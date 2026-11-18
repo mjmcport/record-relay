@@ -21,6 +21,7 @@ class Session:
         self.recording = None
         self.identify = False
         self.scrobble = False
+        self.local_until = None
         self.track_seen = None
         self.recognition_epoch = 0
         self.track_epoch = 0
@@ -40,6 +41,7 @@ class Session:
             self.track = None
             if not self.identify:
                 self.scrobble = False
+                self.local_until = None
             self.gate.observe(self.clock(), enabled=False, signal=False, buffered_seconds=0)
 
     def set_scrobble(self, enabled):
@@ -47,6 +49,14 @@ class Session:
             if enabled and not self.identify:
                 raise ValueError("Enable Identify before enabling Scrobble")
             self.scrobble = enabled
+            if not enabled:
+                self.local_until = None
+
+    def set_local_listening(self, enabled):
+        with self.lock:
+            if enabled and not (self.identify and self.scrobble):
+                raise ValueError("Enable Identify and Scrobble first")
+            self.local_until = self.clock() + 1800 if enabled else None
 
     def start_recording(self, name, maximum_seconds=1800):
         if Path(name).name != name or not name.lower().endswith(".wav"):
@@ -60,6 +70,8 @@ class Session:
             if destination.exists() or destination.is_symlink():
                 raise FileExistsError(destination)
             self.recording = BackgroundRecording(destination, maximum_seconds)
+            if self.track is not None:
+                self.recording.add_match(0, self.track)
 
     def stop_recording(self):
         with self.lock:
@@ -113,6 +125,8 @@ class Session:
                 return False
             epoch = self.recognition_epoch
             frames = self.frames_since_gap
+            recorder = self.recording
+            sample_frame = max(0, recorder.offered_frames - frames) if recorder else 0
         result = None
         retry_after = 0
         started = clock()
@@ -133,6 +147,8 @@ class Session:
                 if self.identify and self.recognition_epoch == epoch and result:
                     self.track = result
                     self.track_seen = self.clock()
+                    if recorder is not None and recorder is self.recording:
+                        recorder.add_match(sample_frame, result)
 
     def status(self):
         with self.lock:
@@ -148,6 +164,7 @@ class Session:
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
             return {"identify": self.identify, "scrobble": self.scrobble,
                     "signal": signal, "recording": state, "track": track,
+                    "local_listening": self.local_until is not None and self.local_until > now,
                     "track_epoch": self.track_epoch,
                     "recognition_timing": {
                         "seconds_since_boundary": None if self.last_boundary is None else

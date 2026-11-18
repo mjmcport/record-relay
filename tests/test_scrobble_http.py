@@ -57,7 +57,7 @@ class ScrobbleHTTPTests(unittest.TestCase):
                 state = {"scrobble": True, "signal": True,
                          "track": {"artist": "Artist", "title": "Song", "album": "Record"}}
                 for _ in range(245):
-                    monitor.tick(state, lambda _: True)
+                    monitor.tick(state, lambda _track, _local: True)
                 self.assertEqual(len(received), 1)
                 progress = monitor.progress(state)
                 self.assertTrue(progress["submitted"])

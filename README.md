@@ -341,3 +341,29 @@ one matching song with that ID, artist and title. It caches exact lookups,
 does not perform title searches, and leaves duration unknown if the evidence
 is incomplete or the lookup fails. A live test is still needed to measure
 coverage on actual vinyl matches. [Apple catalog response fields](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/UnderstandingSearchResults.html)
+
+### Use the turntable without Music Assistant playback
+
+The Pi can identify and record the physical input while Music Assistant is
+idle. To scrobble listening that happens directly at the turntable, enable
+Identify, Scrobble, and **I’m listening locally**. That explicit opt-in
+expires after 30 minutes, stops counting when the input is quiet, and shares
+the same per-listen receipt as Music Assistant playback. Starting a recording
+does not opt in to listening. Recording continues with all three controls off.
+
+### Review and export a saved side
+
+After recording, open **Download recordings** and choose **Review** next to
+a finished side. Preview the WAV and add the optional quiet-gap suggestions.
+Matches captured alongside the recording can prefill track tags. Review the
+cuts, correct each track’s title, artist and album, and optionally choose a
+local PNG or JPEG as the side’s cover. Export each reviewed track as tagged
+FLAC. FFmpeg must be installed where the panel runs. Match notes and generated
+exports are separate from the lossless side master.
+
+To opt in to passwordless LAN serving, start the panel with `--listen` set to
+the appliance's specific private IPv4 address and `--allow-network` set to
+its private subnet. Normal defaults are loopback-only. The LAN panel trusts
+devices on the configured subnet, so use it on a household network without
+public port forwarding. Browser writes require the panel origin and a fresh
+control token.

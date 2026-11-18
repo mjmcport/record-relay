@@ -122,3 +122,21 @@ class SessionTests(unittest.TestCase):
             session.run(io.BytesIO(b"efgh" * 4800), io.BytesIO())
             self.assertTrue(session.lookup_if_due(lambda _: {"title": "Second"}))
             self.assertEqual(session.status()["track"], {"title": "Second"})
+
+    def test_local_listening_is_explicit_expires_and_resets_on_opt_out(self):
+        with TemporaryDirectory() as folder:
+            now = [50]
+            session = Session(folder, clock=lambda: now[0])
+            with self.assertRaises(ValueError):
+                session.set_local_listening(True)
+            session.set_identify(True)
+            session.set_scrobble(True)
+            self.assertFalse(session.status()["local_listening"])
+            session.set_local_listening(True)
+            self.assertTrue(session.status()["local_listening"])
+            now[0] = 1850
+            self.assertFalse(session.status()["local_listening"])
+            session.set_local_listening(True)
+            session.set_identify(False)
+            self.assertFalse(session.status()["local_listening"])
+            self.assertFalse(session.status()["scrobble"])

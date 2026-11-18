@@ -1,4 +1,7 @@
 """Run an optional recorder behind a bounded, nonblocking PCM queue."""
+import json
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from queue import Empty, Full, Queue
 from threading import Event, Thread
 
@@ -15,6 +18,8 @@ class BackgroundRecording:
         self.overrun = Event()
         self.error = None
         self.frames = 0
+        self.offered_frames = 0
+        self.cues = []
         self.pending = b""
         self.thread = Thread(
             target=self._run, args=(destination, maximum_seconds), daemon=True,
@@ -27,9 +32,34 @@ class BackgroundRecording:
             return
         try:
             self.queue.put_nowait(block)
+            self.offered_frames += len(block) // 4
         except Full:
             self.overrun.set()
             self.closing.set()
+
+    def add_match(self, frame, match):
+        if self.closing.is_set():
+            return
+        tags = {key: value[:300] for key in ("title", "artist", "album")
+                if isinstance(value := match.get(key), str) and value.strip()}
+        if not tags.get("title") or not tags.get("artist"):
+            return
+        if len(self.cues) < 512 and (not self.cues or self.cues[-1]["tags"] != tags):
+            self.cues.append({"frame": max(0, frame), "tags": tags})
+
+    def _write_cues(self, destination):
+        cues = [cue for cue in self.cues if cue["frame"] < self.frames]
+        if not cues:
+            return
+        sidecar = destination.with_suffix(".matches.json")
+        with NamedTemporaryFile(dir=destination.parent, delete=False) as output:
+            scratch = Path(output.name)
+            try:
+                output.write(json.dumps(cues).encode())
+                output.close()
+                sidecar.hardlink_to(scratch)
+            finally:
+                scratch.unlink(missing_ok=True)
 
     def read(self, size):
         while not self.pending:
@@ -61,6 +91,12 @@ class BackgroundRecording:
             )
         except Exception as error:
             self.error = error
+        else:
+            try:
+                self._write_cues(destination)
+            except OSError:
+                # Optional tags never invalidate an already-published WAV.
+                pass
         finally:
             self.finished.set()
 

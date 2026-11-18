@@ -25,6 +25,12 @@ def private_text(path):
     return path.read_text()
 
 
+def still_listening(session, track, local):
+    status = session.status()
+    return (status["scrobble"] and status["signal"] and status["track"] is track
+            and status["local_listening"] == local)
+
+
 def serve(args):
     if not args.library.is_dir():
         raise ValueError("Create the recording directory first")
@@ -75,6 +81,10 @@ def serve(args):
                     if data["enabled"] and monitor is None:
                         raise ValueError("Configure Music Assistant and ListenBrainz first")
                     session.set_scrobble(data["enabled"])
+                elif action == "local_listening":
+                    if type(data["enabled"]) is not bool:
+                        raise ValueError("Local listening expects a boolean")
+                    session.set_local_listening(data["enabled"])
                 elif action == "record":
                     session.start_recording(data["name"], data.get("limit", 1800))
                 elif action == "stop":
@@ -101,7 +111,7 @@ def serve(args):
             )
         if monitor is not None:
             scrobble_worker = RecognitionWorker(
-                lambda: monitor.tick(session.status(), lambda track: session.status()["scrobble"] and session.status()["track"] is track),
+                lambda: monitor.tick(session.status(), lambda track, local: still_listening(session, track, local)),
                 lambda: True, interval=1,
             )
         worker = Thread(target=server.serve_forever, daemon=True)

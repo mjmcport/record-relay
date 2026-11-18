@@ -66,6 +66,7 @@ class ScrobbleMonitor:
         self.wall_clock = wall_clock
         self.play = None
         self.track_epoch = None
+        self.local_listening = False
 
     def progress(self, status):
         play = self.play
@@ -102,11 +103,15 @@ class ScrobbleMonitor:
             self.track_epoch = epoch
         elif self.play.duration is None:
             self.play.duration = duration
+        local = status.get("local_listening") is True
+        if local != self.local_listening:
+            self.delivery.timing.previous = None
+            self.local_listening = local
         try:
-            audible = self.observer.audible()
+            audible = local or self.observer.audible()
         except Exception:
             self.delivery.timing.previous = None
             raise
-        enabled = still_enabled(track)
+        enabled = still_enabled(track, local)
         return self.delivery.observe(self.play, audible=audible and enabled, enabled=enabled,
                                      artist=artist, title=title, album=track.get("album"))

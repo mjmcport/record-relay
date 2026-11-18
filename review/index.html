@@ -17,7 +17,7 @@ canvas{display:block;background:#10121c;border-radius:8px}
 :focus-visible{outline:3px solid #84dfd2;outline-offset:3px}
 li{margin:.4rem 0}
 </style>
-<main>
+<main data-review-token="__REVIEW_TOKEN__">
 <h1>Review a record side</h1>
 <p>Listen to your side master, then mark the starts of the tracks you want to export.</p>
 <section aria-label="Recording and waveform">
@@ -34,6 +34,9 @@ li{margin:.4rem 0}
 <button id="position" disabled>Use playback position</button>
 <button id="add" disabled>Save track start</button>
 <button id="save" disabled>Download split plan</button>
+<div id="export-options" hidden>
+<label>Front cover for this side <input id="cover" type="file" accept="image/png,image/jpeg"></label>
+</div>
 <ol id="splits"></ol>
 </section>
 </main>
