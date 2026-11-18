@@ -88,3 +88,7 @@ This verifies the transport and routing independently of the virtual microphone.
 The private token used for the first routing test was discarded locally. Batch the remaining authenticated tests into one session with an operator-approved credential. Prefer an isolated Music Assistant instance with an independent account and disposable pairings, so temporary token revocation cannot affect household pairings. If using the live server, create ephemeral endpoints with fresh identity state, verify that the sink is independent, and revoke only the dedicated token after cleanup. Avoid bulk user-token revocation.
 
 Feed generated stereo PCM into the private PulseAudio monitor, then play that source only on the disposable silent sink. Run for at least a minute. Check continuity across multiple tone changes, observe a secondary reader disconnect while the primary runs, then reconnect a disposable Sendspin endpoint and verify delivery resumes. Stop, unpair and remove the test endpoints. Leave the production Turntable source and Sonos group alone throughout.
+
+### Generate a waveform for track review
+
+Run `python3 waveform.py side-a.wav --columns 1000` to produce compact JSON with independent peaks for the two channels. The reader processes the side in small chunks. Each peak column spans a known range of sample frames, so a future editor can map a click to a split location. This step makes no changes to the master and needs no network access.
