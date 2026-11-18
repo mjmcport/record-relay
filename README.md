@@ -178,3 +178,7 @@ At a playback break, stop the original capture process before opening the Behrin
 If the source fails, stop the restarted Sendspin process and relay, remove only the pilot override, reload systemd, and start the original unit. Check that Music Assistant recognizes the same Turntable identity and confirm audible playback before closing the recovery window.
 
 The Pi deployment verified the real Behringer device opened through the relay, the paired Sendspin client opened the monitor at 48 kHz stereo 16-bit, and Music Assistant continued to list the existing source. A synthetic run under the service account produced a WAV with 163,200 sample frames and the expected PCM. Audible playback on a physical speaker and recording a real record require a live listening test. Recognition and scrobbling start disabled.
+
+### Where recognized metadata appears
+
+Record Relay can show the recognized artist and title in its companion panel. Music Assistant 2.10.12's built-in Sendspin source provider initializes stream metadata with the source name and does not consume recognition events from this app. Native now-playing metadata needs a Music Assistant integration that updates the active stream's metadata without restarting it. Confirm that updates appear on the intended player before using them to drive scrobbling. [Sendspin source provider](https://github.com/music-assistant/server/blob/2.10.12/music_assistant/providers/sendspin_source/provider.py)
