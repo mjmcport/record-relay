@@ -158,3 +158,21 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(cues, [{"frame": 0, "tags": {"title": "Fixture", "artist": "Artist"}}])
             with wave.open(str(Path(folder) / "tagged.wav"), "rb") as master:
                 self.assertEqual(master.readframes(48000), pcm)
+
+    def test_buffered_save_prepends_history_and_preserves_live_frames(self):
+        now = [0]
+        with TemporaryDirectory() as folder:
+            session = Session(folder, clock=lambda: now[0])
+            first, later = b"abcd" * 4800, b"efgh" * 4800
+            session.run(io.BytesIO(first), io.BytesIO())
+            self.assertAlmostEqual(session.status()["buffered_seconds"], 0.1)
+            self.assertFalse(session.status()["scrobble"])
+            session.start_recording("saved.wav", buffered=True)
+            session.run(io.BytesIO(later), io.BytesIO())
+            self.assertEqual(session.stop_recording(), 9600)
+            with wave.open(str(Path(folder) / "saved.wav"), "rb") as saved:
+                self.assertTrue(saved.readframes(9600) == first + later)
+            now[0] = 600
+            self.assertEqual(session.status()["buffered_seconds"], 0)
+            with self.assertRaisesRegex(ValueError, "no buffered"):
+                session.start_recording("expired.wav", buffered=True)

@@ -53,3 +53,31 @@ class RecordingDownloads(unittest.TestCase):
                 finally:
                     server.shutdown()
                     thread.join()
+
+    def test_saved_side_preview_serves_authenticated_byte_ranges(self):
+        with TemporaryDirectory() as directory:
+            library = Path(directory)
+            (library / "side.wav").write_bytes(b"RIFF-preview")
+            with ThreadingHTTPServer(("127.0.0.1", 0), panel_handler) as server:
+                server.RequestHandlerClass = panel_handler(
+                    library / "control.sock", server.server_port, library
+                )
+                thread = Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    url = f"http://127.0.0.1:{server.server_port}"
+                    with urlopen(url + "/review/?side=side.wav", timeout=4) as response:
+                        cookie = response.headers["Set-Cookie"].split(";")[0]
+                    target = url + "/recordings/audio?side=side.wav"
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(target, timeout=4)
+                    self.assertEqual(error.exception.code, 403)
+                    error.exception.close()
+                    request = Request(target, headers={"Cookie": cookie, "Range": "bytes=1-4"})
+                    with urlopen(request, timeout=4) as response:
+                        self.assertEqual(response.status, 206)
+                        self.assertEqual(response.headers["Content-Range"], "bytes 1-4/12")
+                        self.assertEqual(response.read(), b"IFF-")
+                finally:
+                    server.shutdown()
+                    thread.join()

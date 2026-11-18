@@ -1,5 +1,7 @@
 """Control optional recording and recognition during a running PCM relay."""
 from pathlib import Path
+import re
+from datetime import datetime
 import math
 from threading import Lock
 from time import monotonic
@@ -17,6 +19,8 @@ class Session:
         self.library = Path(library)
         self.clock = clock
         self.recent = RecentAudio(seconds=12)
+        self.turntable_buffer = RecentAudio(seconds=600)
+        self.last_signal_at = None
         self.lock = Lock()
         self.recording = None
         self.identify = False
@@ -58,7 +62,7 @@ class Session:
                 raise ValueError("Enable Identify and Scrobble first")
             self.local_until = self.clock() + 1800 if enabled else None
 
-    def start_recording(self, name, maximum_seconds=1800):
+    def start_recording(self, name, maximum_seconds=1800, *, buffered=False):
         if Path(name).name != name or not name.lower().endswith(".wav"):
             raise ValueError("Choose a plain WAV filename")
         if type(maximum_seconds) is not int or not 1 <= maximum_seconds <= 3600:
@@ -69,9 +73,18 @@ class Session:
             destination = self.library / name
             if destination.exists() or destination.is_symlink():
                 raise FileExistsError(destination)
-            self.recording = BackgroundRecording(destination, maximum_seconds)
+            if self.last_signal_at is not None and self.clock() - self.last_signal_at >= 600:
+                self.turntable_buffer.clear()
+                self.last_signal_at = None
+            prefix = self.turntable_buffer.snapshot_blocks() if buffered else ()
+            if buffered and not prefix:
+                raise ValueError("There is no buffered turntable audio to save.")
+            if sum(map(len, prefix)) >= maximum_seconds * RATE * FRAME_BYTES:
+                raise ValueError("Choose a recording limit longer than the buffered audio.")
+            self.recording = BackgroundRecording(destination, maximum_seconds, blocks=300 if buffered else 30, prefix=prefix)
             if self.track is not None:
-                self.recording.add_match(0, self.track)
+                frame = max(0, self.recording.offered_frames - self.frames_since_gap) if buffered else 0
+                self.recording.add_match(frame, self.track)
 
     def stop_recording(self):
         with self.lock:
@@ -97,6 +110,7 @@ class Session:
             self.last_audio = self.clock()
             self.signal = rms >= 32768 * 10 ** (-45 / 20)
             if self.signal:
+                self.last_signal_at = self.last_audio
                 self.quiet_frames = 0
             else:
                 self.quiet_frames += frames
@@ -111,6 +125,12 @@ class Session:
                 self.frames_since_gap = 0
             else:
                 self.frames_since_gap = min(12 * RATE, self.frames_since_gap + frames)
+            if self.last_signal_at is not None:
+                if self.last_audio - self.last_signal_at >= 600:
+                    self.turntable_buffer.clear()
+                    self.last_signal_at = None
+                else:
+                    self.turntable_buffer.append(block)
             if self.recording is not None:
                 self.recording.offer(block)
 
@@ -164,7 +184,17 @@ class Session:
             now = self.clock()
             signal = self.signal and self.last_audio is not None and now - self.last_audio < 1
             track = self.track if self.track_seen is not None and now - self.track_seen < 210 else None
-            return {"identify": self.identify, "scrobble": self.scrobble,
+            label = ""
+            if track and all(isinstance(track.get(k), str) for k in ("artist", "album")):
+                label = re.sub(r"[^A-Za-z0-9 ._-]+", "", f'{track["artist"]} - {track["album"]}').strip(" .")
+            suggestion = f"{label[:100]} - Side A.wav" if label else None
+            if suggestion is not None and (self.library / suggestion).exists():
+                suggestion = f"{label[:85]} - {datetime.now():%Y%m%d-%H%M%S}.wav"
+            return {"suggested_filename": suggestion,
+                    "buffered_seconds": (self.turntable_buffer.size / (RATE * FRAME_BYTES)
+                        if self.last_signal_at is not None and now - self.last_signal_at < 600 else 0),
+                    "buffer_limit_seconds": 600,
+                    "identify": self.identify, "scrobble": self.scrobble,
                     "signal": signal, "recording": state, "track": track,
                     "local_listening": self.local_until is not None and self.local_until > now,
                     "track_epoch": self.track_epoch,

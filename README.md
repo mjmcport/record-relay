@@ -375,3 +375,21 @@ errors use the existing backoff. The panel shows whether it is gathering
 audio, waiting on a retry, or blocked by a request budget. The local diagnostics
 contain only timing, counts, and outcomes. They do not retain audio, fingerprints,
 track names, or credentials in diagnostic logs.
+
+### Save a side after the needle drops
+
+The capture service can retain the latest ten minutes in a volatile PCM
+buffer. At 48 kHz, 16-bit stereo the buffer holds up to 115.2 MB. It starts
+when input first crosses the signal threshold, rolls forward as audio
+arrives, and expires after ten minutes of silence or a restart. Nothing is
+written as a side recording until you choose **Save buffered audio and keep
+recording**. That action prepends the retained audio and then records the
+live continuation. Anything already overwritten or expired cannot be
+recovered. The total recording limit includes the saved prefix.
+
+Review opens saved sides directly and uses byte-range requests for seeking
+while the waveform is computed. NumPy is optional and speeds up analysis of
+full-length sides. Quiet-gap starts are suggestions and can be edited or
+deleted before export. The browser exports FLAC and MP3 with optional artwork,
+or uncompressed WAV. Export filenames use edited artist and title when
+provided. Original side masters are unchanged.

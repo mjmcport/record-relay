@@ -15,8 +15,8 @@ BLOCK_BYTES = RATE * FRAME_BYTES // 10
 
 class RecentAudio:
     def __init__(self, seconds=15):
-        if not 1 <= seconds <= 60:
-            raise ValueError("Buffer duration must be between 1 and 60 seconds")
+        if not 1 <= seconds <= 600:
+            raise ValueError("Buffer duration must be between 1 and 600 seconds")
         self.limit = seconds * RATE * FRAME_BYTES
         self.blocks = deque()
         self.size = 0
@@ -37,6 +37,15 @@ class RecentAudio:
                     self.size -= excess
                 else:
                     self.size -= len(oldest)
+
+    def snapshot_blocks(self):
+        with self.lock:
+            return tuple(self.blocks)
+
+    def clear(self):
+        with self.lock:
+            self.blocks.clear()
+            self.size = 0
 
     def snapshot(self):
         # Copy references under the lock. Assemble the immutable audio outside it.

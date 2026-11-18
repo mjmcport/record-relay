@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from collections import deque
 from queue import Empty, Full, Queue
 from threading import Event, Thread
 
@@ -9,7 +10,7 @@ from recording import record_side
 
 
 class BackgroundRecording:
-    def __init__(self, destination, maximum_seconds, *, blocks=30):
+    def __init__(self, destination, maximum_seconds, *, blocks=30, prefix=()):
         if blocks < 1:
             raise ValueError("Queue capacity must be positive")
         self.queue = Queue(maxsize=blocks)
@@ -18,7 +19,8 @@ class BackgroundRecording:
         self.overrun = Event()
         self.error = None
         self.frames = 0
-        self.offered_frames = 0
+        self.prefix = deque(prefix)
+        self.offered_frames = sum(len(block) // 4 for block in prefix)
         self.cues = []
         self.pending = b""
         self.thread = Thread(
@@ -65,6 +67,9 @@ class BackgroundRecording:
         while not self.pending:
             if self.overrun.is_set():
                 raise OSError("Recording fell behind playback")
+            if self.prefix:
+                self.pending = self.prefix.popleft()
+                continue
             try:
                 self.pending = self.queue.get(timeout=0.05)
             except Empty:

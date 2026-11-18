@@ -4,27 +4,56 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Record Relay · Side review</title>
 <style>
-body{margin:0;background:#161824;color:#f7f2e8;font:1rem system-ui;line-height:1.6}
-main{max-width:900px;margin:auto;padding:clamp(1rem,5vw,4rem)}
-h1{font:clamp(2.5rem,8vw,5rem) Georgia;margin:.25em 0}
-section{background:#242737;border-radius:16px;padding:1.25rem;margin:1.25rem 0}
-label{display:block;margin:.75rem 0}
-input,button{font:inherit;max-width:100%}
-button{background:#f3bd81;color:#22212c;border:0;border-radius:8px;padding:.45em .8em;margin:.2em;cursor:pointer}
-button:disabled{opacity:.65;cursor:default}
-audio,canvas{width:100%}
-canvas{display:block;background:#10121c;border-radius:8px}
-:focus-visible{outline:3px solid #84dfd2;outline-offset:3px}
-li{margin:.4rem 0}
+:root{color-scheme:dark;--paper:#f6e7ce;--ink:#222224;--bg:#181719;--surface:#252328;--line:#49434b;--accent:#f4bb75}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--paper);font:1rem/1.45 'Avenir Next',Avenir,sans-serif}
+main{width:min(1050px,100%);margin:auto;padding:clamp(1.25rem,5vw,4rem)}
+h1,h2,h3{font-family:Georgia,serif;line-height:1.12;margin:.1em 0 .65em}
+h1{font-size:clamp(2.6rem,7vw,5rem);letter-spacing:-.05em}
+h2{font-size:clamp(1.5rem,3vw,2.2rem)}
+section{border-top:1px solid var(--line);padding:1.35rem 0;margin-top:1.25rem}
+label{display:block;margin:.65rem 0}
+input,button,select{font:inherit;max-width:100%}
+input:not([type=checkbox]),select{display:block;background:var(--surface);color:var(--paper);border:1px solid var(--line);border-radius:.25rem;padding:.45rem .55rem}
+button{background:var(--accent);color:var(--ink);border:0;border-radius:.27rem;padding:.55rem .85rem;margin:.15rem .35rem .15rem 0;cursor:pointer;font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+a{color:var(--accent);text-underline-offset:.25em}
+:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+audio,canvas{width:100%;display:block;margin:1rem 0}
+canvas{background:#29232b;border:1px solid var(--line);height:clamp(110px,20vw,180px)}
+ol{margin-block:1.2rem;padding-left:1.35rem}
+li{padding:.9rem 0;border-top:1px solid var(--line)}
+li strong{font-family:Georgia,serif;font-size:1.2rem}
+li[aria-current=true]{border-color:var(--accent)}
+.track-line{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.track-line strong{min-width:min(10rem,100%)}
+.secondary{background:transparent;border:1px solid var(--line);color:var(--paper)}
+summary{cursor:pointer;width:max-content;color:var(--accent);padding-block:.6rem}
+.tag-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.6rem}
+.tag-grid input{width:100%}
+#export-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.35rem 1rem;padding:1rem;background:var(--surface)}
+#export-options h3{grid-column:1/-1}
+@media(max-width:540px){.tag-grid,#export-options{grid-template-columns:1fr}}
+.track-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:1.5rem}
+.track-workspace ol{margin-top:1.25rem}
+#track-editor{background:var(--surface);padding:1.25rem;border-top:2px solid var(--accent)}
+.track-select{display:block;width:100%;text-align:left}
+.track-select[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+#splits small{display:block;margin:.35rem .55rem}
+@media(max-width:540px){.track-workspace{grid-template-columns:1fr;gap:0}}
+[hidden]{display:none!important}
 </style>
 <main data-review-token="__REVIEW_TOKEN__">
-<h1>Review a record side</h1>
-<p>Listen to your side master, then mark the starts of the tracks you want to export.</p>
+<nav><a href="/">Record Relay</a> · <a href="/recordings/">Saved recordings</a></nav><h1 id="side-heading">Review a record side</h1>
+<p>Review the suggested starts, then export the tracks you’ve checked. Your original WAV stays intact.</p>
 <section aria-label="Recording and waveform">
-<label>Side master <input id="recording" type="file" accept=".wav,audio/wav"></label>
-<label>Waveform JSON <input id="waveform" type="file" accept=".json,application/json"></label>
+<div id="manual-sources"><label>Side master <input id="recording" type="file" accept=".wav,audio/wav"></label>
+<label>Waveform JSON <input id="waveform" type="file" accept=".json,application/json"></label></div>
 <audio id="player" controls preload="metadata" aria-label="Side master playback"></audio>
-<canvas id="peaks" width="1000" height="180" aria-label="Stereo peak overview"></canvas>
+<canvas id="peaks" width="1000" height="180" tabindex="0"
+  aria-label="Stereo waveform. Arrow keys seek by five seconds. Home and End seek to either end."></canvas>
+<progress id="load-progress" aria-label="Loading saved side" hidden></progress>
+<button type="button" id="retry-side" hidden>Retry loading side</button>
 <p id="status" role="status">Choose the recording and its waveform JSON to begin.</p>
 </section>
 <section aria-labelledby="splits-label">
@@ -35,9 +64,27 @@ li{margin:.4rem 0}
 <button id="add" disabled>Save track start</button>
 <button id="save" disabled>Download split plan</button>
 <div id="export-options" hidden>
-<label>Front cover for this side <input id="cover" type="file" accept="image/png,image/jpeg"></label>
+<h3>Album and export</h3>
+<label>Album artist <input id="album-artist" maxlength="300"></label>
+<label>Album title <input id="album-title" maxlength="300"></label>
+<label>Export format <select id="format"><option value="flac">FLAC · lossless</option><option value="mp3">MP3 · compact</option><option value="wav">WAV · uncompressed</option></select></label>
+<label>Front cover for this side <input id="cover" type="file" accept="image/png,image/jpeg"><img id="cover-preview" alt="Selected front cover" width="96" height="96" hidden></label>
 </div>
-<ol id="splits"></ol>
+<div class="track-workspace">
+<ol id="splits" aria-label="Track list"></ol>
+<section id="track-editor" hidden aria-labelledby="editor-heading">
+<h3 id="editor-heading">Track details</h3>
+<label>Start time in seconds <input id="editor-boundary" type="number" min="0" step="any"></label>
+<button id="move-marker" type="button" class="secondary">Move start</button>
+<button id="remove-marker" type="button" class="secondary">Remove marker</button>
+<label>Track title <input id="track-title" maxlength="300"></label>
+<label>Track artist <input id="track-artist" maxlength="300" placeholder="Uses album artist if left blank"></label>
+<label>Track album <input id="track-album" maxlength="300" placeholder="Uses album title if left blank"></label>
+<button id="confirm-track" type="button" class="secondary">Confirm tags</button>
+<button id="export-track" type="button">Export selected track</button>
+<p id="editor-status" role="status"></p>
+</section>
+</div>
 </section>
 </main>
 <script type="module" src="review.mjs"></script>

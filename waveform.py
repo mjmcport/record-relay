@@ -4,7 +4,7 @@ import json
 import struct
 import wave
 
-from relay import find_transitions
+from relay import find_transitions, numpy
 
 
 def waveform_peaks(reader, columns, *, suggest=False):
@@ -25,17 +25,26 @@ def waveform_peaks(reader, columns, *, suggest=False):
             block = reader.readframes(count)
             if len(block) != count * 4:
                 raise ValueError("Truncated WAV")
-            for l_sample, r_sample in struct.iter_unpack("<hh", block):
-                left = max(left, abs(l_sample))
-                right = max(right, abs(r_sample))
+            if numpy is not None:
+                stereo = numpy.frombuffer(block, dtype="<i2").reshape(-1, 2)
+                low = stereo.min(axis=0).astype("int32")
+                high = stereo.max(axis=0).astype("int32")
+                left = max(left, int(-low[0]), int(high[0]))
+                right = max(right, int(-low[1]), int(high[1]))
+            else:
+                for l_sample, r_sample in struct.iter_unpack("<hh", block):
+                    left = max(left, abs(l_sample))
+                    right = max(right, abs(r_sample))
             remaining -= count
         peaks.append([left, right])
     rate = reader.getframerate()
     result = {"sample_rate": rate, "frames": total, "peaks": peaks}
     if suggest:
         reader.rewind()
+        full_side = total / rate >= 120
         result["suggested_starts"] = [
-            frame for seconds in find_transitions(reader)
+            frame for seconds in find_transitions(reader, minimum_gap=1.5 if full_side else 0.8,
+                                                  minimum_spacing=45 if full_side else 0)
             if (frame := round(seconds * rate)) < total
         ]
     return result

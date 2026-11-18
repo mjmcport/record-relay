@@ -7,8 +7,12 @@ import wave
 
 
 def export_track(source, output, start, end, tags, *, cover=None):
-    if output.suffix.lower() != ".flac":
-        raise ValueError("Output path must end in .flac")
+    format = output.suffix.lower()
+    codecs = {".flac": "flac", ".mp3": "libmp3lame", ".wav": "pcm_s16le"}
+    if format not in codecs:
+        raise ValueError("Choose FLAC, MP3 or WAV.")
+    if cover is not None and format == ".wav":
+        raise ValueError("Use FLAC or MP3 to embed a cover.")
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
     with wave.open(str(source), "rb") as reader:
@@ -20,7 +24,7 @@ def export_track(source, output, start, end, tags, *, cover=None):
             raise ValueError("Select at least 16 sample frames for FLAC export")
         with TemporaryDirectory(dir=output.parent, prefix=".record-relay-") as scratch:
             pcm = Path(scratch) / "track.wav"
-            encoded = Path(scratch) / "track.flac"
+            encoded = Path(scratch) / ("track" + format)
             reader.setpos(start)
             with wave.open(str(pcm), "wb") as writer:
                 writer.setparams(reader.getparams())
@@ -41,7 +45,9 @@ def export_track(source, output, start, end, tags, *, cover=None):
                 command.extend(["-f", image_format, "-i", str(cover), "-map", "0:a", "-map", "1:v:0",
                                 "-c:v", "copy", "-disposition:v:0", "attached_pic",
                                 "-metadata:s:v:0", "comment=Cover (front)"])
-            command.extend(["-c:a", "flac"])
+            command.extend(["-c:a", codecs[format]])
+            if format == ".mp3":
+                command.extend(["-q:a", "2"])
             for key, value in tags.items():
                 if value:
                     command.extend(["-metadata", f"{key}={value}"])

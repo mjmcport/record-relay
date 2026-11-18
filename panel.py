@@ -45,13 +45,30 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
     def recording_name(name):
         return re.fullmatch(r"[a-zA-Z0-9_. -]{1,120}\.wav", name, re.IGNORECASE) and not name.startswith(".")
 
+    def recorded_matches(source):
+        sidecar = source.with_suffix(".matches.json")
+        if sidecar.is_file() and not sidecar.is_symlink() and sidecar.stat().st_size <= 512_000:
+            try:
+                value = json.loads(sidecar.read_bytes())
+                if isinstance(value, list):
+                    return [cue for cue in value if isinstance(cue, dict)
+                            and type(cue.get("frame")) is int and isinstance(cue.get("tags"), dict)]
+            except (OSError, ValueError):
+                pass
+        return []
+
     class Handler(BaseHTTPRequestHandler):
         def recordings(self):
             entries = []
             for file in sorted(library.iterdir()):
                 if recording_name(file.name) and file.is_file() and not file.is_symlink():
                     name = escape(file.name, quote=True)
-                    entries.append(f'<li><a href="/review/?side={quote(file.name)}">Review {name}</a> · <button name="name" value="{name}">Download {name}</button></li>')
+                    cues = recorded_matches(file)
+                    tags = cues[0]["tags"] if cues else {}
+                    label = " — ".join(str(tags.get(field, "")).strip() for field in ("artist", "album")
+                                       if tags.get(field))
+                    detail = f"<strong>{escape(label)}</strong> · " if label else ""
+                    entries.append(f'<li>{detail}<a href="/review/?side={quote(file.name)}">Review {name}</a> · <button name="name" value="{name}">Download {name}</button></li>')
             content = f"""<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Record Relay · Recordings</title><main><h1>Recordings</h1>
@@ -91,6 +108,55 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.end_headers()
                 shutil.copyfileobj(recording, self.wfile)
 
+        def audio_preview(self, name):
+            cookie = self.headers.get("Cookie", "")
+            if (f"rr_preview={token}" not in cookie.split("; ")
+                    or self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none")
+                    or not recording_name(name)):
+                self.send_error(403)
+                return
+            try:
+                fd = os.open(library / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                self.send_error(404)
+                return
+            with os.fdopen(fd, "rb") as audio:
+                info = os.fstat(audio.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    self.send_error(404)
+                    return
+                size = info.st_size
+                start, end = 0, size - 1
+                request = self.headers.get("Range")
+                if request:
+                    match = re.fullmatch(r"bytes=(\d{0,18})-(\d{0,18})", request)
+                    if match and match[1]:
+                        start = int(match[1])
+                        end = min(end, int(match[2])) if match[2] else end
+                    elif match and match[2]:
+                        start = max(0, size - int(match[2]))
+                    if not match or not any(match.groups()) or not 0 <= start <= end:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                self.send_response(206 if request else 200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                if request:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                remaining = end - start + 1
+                self.send_header("Content-Length", str(remaining))
+                self.end_headers()
+                audio.seek(start)
+                try:
+                    while remaining and (block := audio.read(min(remaining, 65536))):
+                        self.wfile.write(block)
+                        remaining -= len(block)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
         def review_action(self):
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -109,24 +175,10 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 if self.path == "/recordings/waveform":
                     with wave.open(str(source), "rb") as audio:
                         result = waveform_peaks(audio, 1000, suggest=True)
-                    sidecar = source.with_suffix(".matches.json")
-                    if sidecar.is_file() and not sidecar.is_symlink() and sidecar.stat().st_size <= 512_000:
-                        try:
-                            result["matches"] = json.loads(sidecar.read_bytes())
-                        except (OSError, ValueError):
-                            pass
+                    result["matches"] = recorded_matches(source)
                     self.send_body(200, "application/json", json.dumps(result).encode())
                     return
-                if self.path == "/recordings/preview":
-                    with source.open("rb") as recording:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "audio/wav")
-                        self.send_header("Content-Length", str(os.fstat(recording.fileno()).st_size))
-                        self.send_header("Cache-Control", "no-store")
-                        self.end_headers()
-                        shutil.copyfileobj(recording, self.wfile)
-                    return
-                tags = {key: data.get(key, "") for key in ("title", "artist", "album", "track")}
+                tags = {key: data.get(key, "") for key in ("title", "artist", "album", "album_artist", "track")}
                 if any(not isinstance(value, str) or len(value) > 300 or "\0" in value
                        for value in tags.values()):
                     raise ValueError("Tags must be text of no more than 300 characters.")
@@ -134,7 +186,11 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 if type(start) is not int or type(end) is not int:
                     raise ValueError("Split times must resolve to whole sample frames.")
                 with TemporaryDirectory(prefix="record-relay-export-") as scratch:
-                    output = Path(scratch) / "track.flac"
+                    format = data.get("format", "flac")
+                    mime = {"flac": "audio/flac", "mp3": "audio/mpeg", "wav": "audio/wav"}
+                    if format not in mime:
+                        raise ValueError("Choose a supported export format.")
+                    output = Path(scratch) / ("track." + format)
                     cover = None
                     if image := data.get("cover"):
                         suffix = image["format"]
@@ -149,7 +205,7 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                     export_track(source, output, start, end, tags, cover=cover)
                     with output.open("rb") as result:
                         self.send_response(200)
-                        self.send_header("Content-Type", "audio/flac")
+                        self.send_header("Content-Type", mime[format])
                         self.send_header("Content-Length", str(output.stat().st_size))
                         self.send_header("Cache-Control", "no-store")
                         self.end_headers()
@@ -162,11 +218,13 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
             self.send_header("X-Content-Type-Options", "nosniff")
             super().end_headers()
 
-        def send_body(self, status, content_type, content):
+        def send_body(self, status, content_type, content, *, preview_cookie=False):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "DENY")
+            if preview_cookie:
+                self.send_header("Set-Cookie", f"rr_preview={token}; Path=/recordings/audio; HttpOnly; SameSite=Strict")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -181,11 +239,15 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
             if self.path == "/recordings/" and library is not None:
                 self.recordings()
                 return
-            route = urlsplit(self.path).path
+            url = urlsplit(self.path)
+            route = url.path
+            if route == "/recordings/audio" and library is not None:
+                self.audio_preview(parse_qs(url.query).get("side", [""])[0])
+                return
             if route not in pages:
                 self.send_error(404)
                 return
-            self.send_body(200, *pages[route])
+            self.send_body(200, *pages[route], preview_cookie=route == "/review/")
 
         def do_POST(self):
             if (not self.allowed_client() or self.headers.get("Host") != address
@@ -199,7 +261,7 @@ def panel_handler(path, port, library=None, *, host="127.0.0.1", allowed_network
                 self.send_error(403)
                 return
             if library is not None and self.path in (
-                    "/recordings/waveform", "/recordings/preview", "/recordings/export"):
+                    "/recordings/waveform", "/recordings/export"):
                 self.review_action()
                 return
             if self.path != "/control":

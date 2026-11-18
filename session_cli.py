@@ -85,8 +85,9 @@ def serve(args):
                     if type(data["enabled"]) is not bool:
                         raise ValueError("Local listening expects a boolean")
                     session.set_local_listening(data["enabled"])
-                elif action == "record":
-                    session.start_recording(data["name"], data.get("limit", 1800))
+                elif action in ("record", "save_buffer"):
+                    session.start_recording(data["name"], data.get("limit", 1800),
+                                            buffered=action == "save_buffer")
                 elif action == "stop":
                     frames = session.stop_recording()
                     self.wfile.write(json.dumps({"recorded_frames": frames}).encode() + b"\n")

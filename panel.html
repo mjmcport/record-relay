@@ -4,14 +4,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Record Relay</title>
 <style>
-body{margin:0;background:#161824;color:#f7f2e8;font:1rem system-ui;line-height:1.6}
-main{max-width:42rem;margin:auto;padding:clamp(1rem,5vw,4rem)}
-h1{font:clamp(2.5rem,8vw,5rem) Georgia}
-section{background:#242737;border-radius:16px;padding:1.25rem;margin:1rem 0}
-button,input{font:inherit;max-width:100%}
-button{background:#f3bd81;color:#22212c;border:0;border-radius:8px;padding:.45em .8em}
-label{display:block;margin:.6rem 0}
-:focus-visible{outline:3px solid #84dfd2;outline-offset:3px}
+:root{color-scheme:dark;--paper:#f6e7ce;--ink:#222224;--bg:#181719;--surface:#252328;--line:#49434b;--accent:#f4bb75}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--paper);font:1rem/1.45 'Avenir Next',Avenir,sans-serif}
+main{width:min(1050px,100%);margin:auto;padding:clamp(1.25rem,5vw,4rem)}
+h1,h2,h3{font-family:Georgia,serif;line-height:1.12;margin:.1em 0 .65em}
+h1{font-size:clamp(2.6rem,7vw,5rem);letter-spacing:-.05em}
+h2{font-size:clamp(1.5rem,3vw,2.2rem)}
+section{border-top:1px solid var(--line);padding:1.35rem 0;margin-top:1.25rem}
+label{display:block;margin:.65rem 0}
+input,button,select{font:inherit;max-width:100%}
+input:not([type=checkbox]),select{display:block;background:var(--surface);color:var(--paper);border:1px solid var(--line);border-radius:.25rem;padding:.45rem .55rem}
+button{background:var(--accent);color:var(--ink);border:0;border-radius:.27rem;padding:.55rem .85rem;margin:.15rem .35rem .15rem 0;cursor:pointer;font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+a{color:var(--accent);text-underline-offset:.25em}
+:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+audio,canvas{width:100%;display:block;margin:1rem 0}
+canvas{background:#29232b;border:1px solid var(--line);height:clamp(110px,20vw,180px)}
+ol{margin-block:1.2rem;padding-left:1.35rem}
+li{padding:.9rem 0;border-top:1px solid var(--line)}
+li strong{font-family:Georgia,serif;font-size:1.2rem}
+[hidden]{display:none!important}
 </style>
 <main>
 <h1>Record Relay</h1>
@@ -26,12 +39,18 @@ label{display:block;margin:.6rem 0}
 <section aria-labelledby="record-heading">
 <h2 id="record-heading">Record a side</h2>
 <form>
-<label>Filename <input id="name" value="side-a.wav" required></label>
+<label>Filename <input id="name" placeholder="Side name.wav" required></label>
 <label>Maximum minutes <input id="limit" value="30" type="number" min="1" max="60" required></label>
 <button>Start recording</button>
 <button type="button" id="stop">Stop recording</button>
 </form>
 <p id="recording"></p>
+<section id="buffer-panel" hidden aria-labelledby="buffer-heading">
+<h3 id="buffer-heading">Recent turntable audio</h3>
+<p id="buffer-status"></p>
+<p>Up to 10 minutes in memory. Older audio is replaced. The buffer expires after 10 minutes of silence or a restart.</p>
+<button type="button" id="save-buffer">Save buffered audio and keep recording</button>
+</section>
 </section>
 <p id="message" role="status"></p>
 <p>__RECORDINGS_LINK__<a href="/review/">Review track splits</a></p>
@@ -39,6 +58,10 @@ label{display:block;margin:.6rem 0}
 <script>
 const el = id => document.getElementById(id);
 let pending = false;
+let filenameEdited = false;
+const startedAt = new Date();
+el("name").value = "Side " + startedAt.toLocaleDateString("sv-SE") + " " +
+  startedAt.toTimeString().slice(0,8).replaceAll(":", "-") + ".wav";
 async function request(data) {
   const response = await fetch("/control", {
     method:"POST", headers:{"Content-Type":"application/json","X-Control-Token":"__CONTROL_TOKEN__"},
@@ -58,6 +81,14 @@ async function update(data) {
         "Saved " + result.recorded_frames + " frames.";
     }
     const state = await request({action:"status"});
+    el("buffer-panel").hidden = state.buffered_seconds === undefined;
+    const seconds = Math.floor(state.buffered_seconds || 0);
+    el("buffer-status").textContent = seconds ? Math.floor(seconds/60) + ":" +
+      String(seconds%60).padStart(2, "0") + " available to save" : "Waiting for turntable audio.";
+    el("save-buffer").disabled = seconds < 1 || state.recording !== "idle";
+    if (!filenameEdited && state.suggested_filename && state.recording === "idle") {
+      el("name").value = state.suggested_filename;
+    }
     el("identify").checked = state.identify;
     el("scrobble").checked = state.scrobble;
     el("local_listening").checked = state.local_listening;
@@ -98,6 +129,8 @@ document.querySelector("form").onsubmit = event => {
   event.preventDefault();
   update({action:"record",name:el("name").value,limit:el("limit").valueAsNumber*60});
 };
+el("name").oninput = () => { filenameEdited = true; };
+el("save-buffer").onclick = () => update({action:"save_buffer",name:el("name").value,limit:el("limit").valueAsNumber*60});
 el("stop").onclick = () => update({action:"stop"});
 update({action:"status"});
 setInterval(() => update({action:"status"}), 3000);

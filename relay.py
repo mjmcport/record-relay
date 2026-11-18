@@ -6,8 +6,13 @@ from pathlib import Path
 import struct
 import wave
 
+try:
+    import numpy
+except ImportError:
+    numpy = None
 
-def find_transitions(source, minimum_gap=0.8, threshold_db=-45):
+
+def find_transitions(source, minimum_gap=0.8, threshold_db=-45, *, minimum_spacing=0):
     """Yield candidate track starts in seconds from a stereo PCM WAV."""
     if source.getnchannels() != 2 or source.getsampwidth() != 2:
         raise ValueError("Expected 16-bit stereo WAV")
@@ -15,17 +20,22 @@ def find_transitions(source, minimum_gap=0.8, threshold_db=-45):
     block_size = max(1, rate // 10)
     frame = 0
     quiet_frames = 0
-    first_signal = True
+    previous_start = None
     while block := source.readframes(block_size):
-        samples = struct.iter_unpack("<h", block)
         frames = len(block) // 4
-        rms = math.sqrt(sum(value * value for (value,) in samples) / (frames * 2))
+        if numpy is not None:
+            samples = numpy.frombuffer(block, dtype="<i2").astype("float64")
+            rms = math.sqrt(float(numpy.dot(samples, samples)) / (frames * 2))
+        else:
+            samples = struct.iter_unpack("<h", block)
+            rms = math.sqrt(sum(value * value for (value,) in samples) / (frames * 2))
         if rms < 32768 * 10 ** (threshold_db / 20):
             quiet_frames += frames
         else:
-            if first_signal or quiet_frames >= minimum_gap * rate:
+            if previous_start is None or (quiet_frames >= minimum_gap * rate
+                    and frame - previous_start >= minimum_spacing * rate):
                 yield round(frame / rate, 3)
-            first_signal = False
+                previous_start = frame
             quiet_frames = 0
         frame += frames
 
