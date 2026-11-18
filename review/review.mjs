@@ -34,6 +34,11 @@ function resetFingerprintConsent() {
   }
 }
 
+function setSelectedFrame(frame) {
+  if (frame !== selectedFrame) resetFingerprintConsent();
+  selectedFrame = frame;
+}
+
 async function sideRequest(action, payload) {
   const response = await fetch("/recordings/" + action, {
     method: "POST",
@@ -132,7 +137,7 @@ async function loadSavedSide(name) {
           el("cover-preview").src = "data:image/" + restoredCover.format + ";base64," + restoredCover.data;
           el("cover-preview").hidden = false;
         }
-        selectedFrame = points.includes(draft.selected) ? draft.selected : points[0];
+        setSelectedFrame(points.includes(draft.selected) ? draft.selected : points[0]);
         el("draft-status").textContent = "Saved review restored.";
       }
     } catch {
@@ -178,7 +183,7 @@ function render() {
     context.fillStyle = "#f3bd81";
     points.forEach(frame => context.fillRect(frame / waveform.frames * width, 0, 2, height));
   }
-  if (!points.includes(selectedFrame)) selectedFrame = points[0];
+  if (!points.includes(selectedFrame)) setSelectedFrame(points[0]);
   el("splits").parentElement.append(el("track-editor"));
   el("splits").replaceChildren(...points.map((frame, index) => {
     const item = document.createElement("li");
@@ -197,8 +202,7 @@ function render() {
     heading.setAttribute("aria-pressed", String(frame === selectedFrame));
     heading.setAttribute("aria-label", "Seek track start at " + seconds.toFixed(3) + " seconds: " + (tags.title || "Track " + (index + 1)));
     heading.onclick = () => {
-      if (frame !== selectedFrame) resetFingerprintConsent();
-      selectedFrame = frame;
+      setSelectedFrame(frame);
       player.currentTime = seconds;
       render();
       el("splits").querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
@@ -267,7 +271,7 @@ function renderEditor() {
     confirmed.delete(frame);
     dirty();
     if (editing === frame) editing = undefined;
-    selectedFrame = points[Math.min(index, points.length - 1)];
+    setSelectedFrame(points[Math.min(index, points.length - 1)]);
     render();
   };
   el("confirm-track").onclick = () => {
@@ -303,6 +307,7 @@ function renderEditor() {
         noncommercial_ack: el("acoustid-consent").checked,
       });
       const result = await response.json();
+      if (selectedFrame !== frame) return;
       const target = el("fingerprint-suggestions");
       target.replaceChildren();
       const candidates = result.matches.flatMap(match =>
@@ -351,7 +356,7 @@ function reset() {
   points = [];
   trackTags.clear();
   confirmed.clear();
-  selectedFrame = undefined;
+  setSelectedFrame(undefined);
   editing = undefined;
   el("seconds").value = "0";
   el("status").textContent = "Waiting for a matching recording and waveform.";
@@ -456,7 +461,7 @@ el("add").onclick = () => {
     confirmed.delete(editing);
   }
   points = [...new Set([...points.filter(point => point !== editing), frame])].sort((a, b) => a - b);
-  selectedFrame = frame;
+  setSelectedFrame(frame);
   dirty();
   editing = undefined;
   render();
