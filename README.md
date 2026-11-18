@@ -303,3 +303,14 @@ across boundaries, and the appliance permits at most 24 recognition attempts
 per rolling hour. The four-minute listening threshold is separate and does not
 delay publishing a recognized title. The timing fields in local control status
 allow future live tests to isolate the capture and provider steps.
+
+### Scrobbling shorter tracks
+
+ListenBrainz's rule uses the shorter of half a track or four minutes. Record
+Relay consumes a trusted `duration_seconds` value when the recognition adapter
+provides one. It preserves the four-minute fallback when the duration is
+unknown. The shipped Shazam adapter does not currently supply a duration, so
+even a complete short vinyl track will not qualify through that adapter yet.
+The next integration needs duration for the exact recognized recording or
+release version. A title-only catalog match is insufficient.
+[ListenBrainz submission rules](https://listenbrainz.readthedocs.io/en/latest/users/api/core.html#post--1-submit-listens)

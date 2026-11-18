@@ -1,5 +1,6 @@
 """Read-only playback evidence from an explicitly configured Music Assistant."""
 import json
+import math
 from urllib.parse import urlsplit
 from urllib.request import Request
 
@@ -93,9 +94,14 @@ class ScrobbleMonitor:
             return False
         identity = json.dumps([artist.casefold().strip(), title.casefold().strip()])
         epoch = status.get("track_epoch")
+        duration = track.get("duration_seconds")
+        if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
+            duration = None
         if self.play is None or self.play.track_id != identity or self.track_epoch != epoch:
-            self.play = ListeningInstance(identity, int(self.wall_clock()), None)
+            self.play = ListeningInstance(identity, int(self.wall_clock()), duration)
             self.track_epoch = epoch
+        elif self.play.duration is None:
+            self.play.duration = duration
         try:
             audible = self.observer.audible()
         except Exception:

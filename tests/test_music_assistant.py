@@ -87,3 +87,30 @@ class MusicAssistantTests(unittest.TestCase):
         monitor.tick(status, lambda _: True)
         monitor.tick({**status, "track_epoch": 3}, lambda _: True)
         self.assertEqual([key[1] for key in observed], [10, 10, 30])
+
+    def test_verified_duration_allows_a_short_track_to_qualify_after_half(self):
+        from music_assistant import ScrobbleMonitor
+        from pathlib import Path
+        from receipts import ReceiptStore
+        from tempfile import TemporaryDirectory
+        from worker import PlaybackTiming, ScrobbleDelivery
+
+        class Observer:
+            def audible(self):
+                return True
+
+        with TemporaryDirectory() as folder:
+            elapsed = iter(range(100))
+            sent = []
+            delivery = ScrobbleDelivery(
+                ReceiptStore(Path(folder) / "receipts.db"), "mock",
+                timing=PlaybackTiming(clock=lambda: next(elapsed)),
+                sender=lambda play, **_: sent.append(play.seconds) is None,
+            )
+            monitor = ScrobbleMonitor(Observer(), delivery, wall_clock=lambda: 100)
+            state = {"scrobble": True, "signal": True,
+                     "track": {"artist": "Artist", "title": "Song", "duration_seconds": 90}}
+            for _ in range(45):
+                self.assertFalse(monitor.tick(state, lambda _: True))
+            self.assertTrue(monitor.tick(state, lambda _: True))
+            self.assertEqual(sent, [45])
