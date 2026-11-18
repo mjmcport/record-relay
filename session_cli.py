@@ -39,7 +39,7 @@ def serve(args):
     if token is not None:
         recognizer = lambda sample: recognize_audd(sample, token, enabled=True)
     elif args.shazam:
-        recognizer = shazam_recognizer()
+        recognizer = shazam_recognizer(use_catalog=args.shazam_catalog_duration)
     recognition_worker = scrobble_worker = None
     monitor = None
     if args.scrobble_config:
@@ -129,12 +129,15 @@ def main():
     providers = start.add_mutually_exclusive_group()
     providers.add_argument("--audd-token-file", type=Path)
     providers.add_argument("--shazam", action="store_true")
+    start.add_argument("--shazam-catalog-duration", action="store_true")
     start.add_argument("--scrobble-config", type=Path)
     control = modes.add_parser("control")
     control.add_argument("socket", type=Path)
     control.add_argument("request", help="JSON action")
     args = parser.parse_args()
     if args.mode == "serve":
+        if args.shazam_catalog_duration and not args.shazam:
+            parser.error("Catalog duration requires the Shazam adapter")
         serve(args)
     else:
         with socket.socket(socket.AF_UNIX) as client:

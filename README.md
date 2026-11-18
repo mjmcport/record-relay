@@ -331,3 +331,11 @@ events. It ignores live audio-source events, including the Turntable source.
 Updating the Turntable's display metadata does not change its media type or
 emit a library-track playback event. Record Relay remains responsible for
 eligible Turntable listens.
+
+With `--shazam --shazam-catalog-duration`, the recognition worker can use an
+Apple track ID embedded in a Shazam result. The separate catalog request
+contains only that ID. The worker accepts a duration only when Apple returns
+one matching song with that ID, artist and title. It caches exact lookups,
+does not perform title searches, and leaves duration unknown if the evidence
+is incomplete or the lookup fails. A live test is still needed to measure
+coverage on actual vinyl matches. [Apple catalog response fields](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/UnderstandingSearchResults.html)

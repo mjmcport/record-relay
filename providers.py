@@ -3,6 +3,8 @@ import asyncio
 import io
 import json
 import ssl
+from functools import lru_cache
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 from uuid import UUID, uuid4
 import wave
@@ -63,9 +65,58 @@ def shazam_metadata(response):
     return result
 
 
-def shazam_recognizer():
+def apple_track_id(track):
+    """Accept only explicit Apple track links attached to the recognized track."""
+    hub = track.get("hub")
+    options = hub.get("options", []) if isinstance(hub, dict) else []
+    ids = set()
+    for option in options if isinstance(options, list) else ():
+        if not isinstance(option, dict):
+            continue
+        for action in option.get("actions") or ():
+            if not isinstance(action, dict) or not isinstance(action.get("uri"), str):
+                continue
+            try:
+                url = urlsplit(action["uri"])
+            except ValueError:
+                continue
+            if url.scheme not in ("https", "itms", "itmss") or url.hostname not in (
+                    "music.apple.com", "itunes.apple.com"):
+                continue
+            candidates = parse_qs(url.query).get("i", [])
+            if not candidates and "/song/" in url.path:
+                candidates = [url.path.rstrip("/").rsplit("/", 1)[-1]]
+            for value in candidates:
+                if value.isascii() and value.isdecimal() and 1 <= len(value) <= 18:
+                    ids.add(int(value))
+    return next(iter(ids)) if len(ids) == 1 else None
+
+
+def catalog_duration(track_id, title, artist, transport=authenticated_open):
+    """Lookup one exact Apple ID. Require matching song, title and artist."""
+    if type(track_id) is not int or track_id <= 0:
+        return None
+    url = "https://itunes.apple.com/lookup?" + urlencode({"id": track_id})
+    with transport(Request(url), timeout=3) as response:
+        data = json.loads(response.read(64_000))
+    matches = [item for item in data.get("results", [])
+               if isinstance(item, dict) and item.get("trackId") == track_id and item.get("kind") == "song"]
+    if len(matches) != 1:
+        return None
+    item = matches[0]
+    for key, expected in (("trackName", title), ("artistName", artist)):
+        value = item.get(key)
+        if not isinstance(value, str) or value.strip().casefold() != expected.strip().casefold():
+            return None
+    milliseconds = item.get("trackTimeMillis")
+    return milliseconds / 1000 if type(milliseconds) is int and 0 < milliseconds <= 3_600_000 else None
+
+
+def shazam_recognizer(*, use_catalog=False):
     """Construct the optional ShazamIO provider without opening a connection."""
     from shazamio import Shazam
+
+    cached_duration = lru_cache(maxsize=128)(catalog_duration)
 
     async def lookup(sample):
         async with Shazam() as client:
@@ -73,7 +124,16 @@ def shazam_recognizer():
 
     def recognize(sample):
         validate_sample(sample)
-        return shazam_metadata(asyncio.run(asyncio.wait_for(lookup(sample), timeout=10)))
+        response = asyncio.run(asyncio.wait_for(lookup(sample), timeout=10))
+        match = shazam_metadata(response)
+        if match and use_catalog and (track_id := apple_track_id(response["track"])) is not None:
+            try:
+                duration = cached_duration(track_id, match["title"], match["artist"])
+            except (OSError, ValueError, TypeError, AttributeError):
+                duration = None
+            if duration is not None:
+                match["duration_seconds"] = duration
+        return match
 
     return recognize
 
